@@ -2,6 +2,9 @@
 
 #include "bellCollider.h"
 #include "planeCollider.h"
+#include "skirtBellCollider.h"
+#include "skirtCollideDeformer.h"
+#include "skirtWaveDeformer.h"
 
 MStatus initializePlugin(MObject plugin)
 {
@@ -18,6 +21,18 @@ MStatus initializePlugin(MObject plugin)
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	stat = MHWRender::MDrawRegistry::registerDrawOverrideCreator(PlaneCollider::drawDbClassification, PlaneCollider::drawRegistrantId, PlaneColliderDrawOverride::creator);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.registerNode("skirtBellCollider", SkirtBellCollider::typeId, SkirtBellCollider::creator, SkirtBellCollider::initialize, MPxNode::kLocatorNode, &SkirtBellCollider::drawDbClassification);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = MHWRender::MDrawRegistry::registerDrawOverrideCreator(SkirtBellCollider::drawDbClassification, SkirtBellCollider::drawRegistrantId, SkirtBellColliderDrawOverride::creator);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.registerNode("skirtCollideDeformer", SkirtCollideDeformer::typeId, SkirtCollideDeformer::creator, SkirtCollideDeformer::initialize, MPxNode::kDeformerNode);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.registerNode("skirtWaveDeformer", SkirtWaveDeformer::typeId, SkirtWaveDeformer::creator, SkirtWaveDeformer::initialize, MPxNode::kDeformerNode);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	return MS::kSuccess;
@@ -39,6 +54,18 @@ MStatus uninitializePlugin(MObject plugin)
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	stat = pluginFn.deregisterNode(PlaneCollider::typeId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = MHWRender::MDrawRegistry::deregisterDrawOverrideCreator(SkirtBellCollider::drawDbClassification, SkirtBellCollider::drawRegistrantId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.deregisterNode(SkirtBellCollider::typeId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.deregisterNode(SkirtWaveDeformer::typeId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.deregisterNode(SkirtCollideDeformer::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	return MS::kSuccess;
