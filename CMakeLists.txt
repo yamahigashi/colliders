@@ -15,8 +15,14 @@ set(sources
   sources/planeCollider.h
   sources/skirtBellCollider.cpp
   sources/skirtBellCollider.h
+  sources/skirtCollideDeformer.cpp
+  sources/skirtCollideDeformer.h
   sources/utils.hpp)
 
 add_library(colliders SHARED ${sources})
 
 MAYA_PLUGIN( colliders )
+install(TARGETS colliders
+        RUNTIME DESTINATION modules
+        LIBRARY DESTINATION modules
+        ARCHIVE DESTINATION modules)

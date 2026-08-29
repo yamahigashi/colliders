@@ -1,6 +1,10 @@
 #pragma once
 
+#include <maya/MMatrix.h>
 #include <maya/MPoint.h>
+#include <maya/MPointArray.h>
+#include <maya/MQuaternion.h>
+#include <maya/MVector.h>
 
 #define RAD2DEG 57.2958
 #define DEG2RAD 0.0174532862
@@ -59,6 +63,51 @@ inline MVector xaxis(const MMatrix &mat) { return maxis(mat, 0); }
 inline MVector yaxis(const MMatrix& mat) { return maxis(mat, 1); }
 inline MVector zaxis(const MMatrix& mat) { return maxis(mat, 2); }
 inline MPoint taxis(const MMatrix& mat) { return MPoint(maxis(mat, 3)); }
+
+inline MVector getAxis(const MMatrix& m, short idx)
+{
+    // 0=X, 1=Y, 2=Z, 3=-X, 4=-Y, 5=-Z
+    const MVector v = maxis(m, (unsigned int)(idx % 3));
+    return idx >= 3 ? -v : v;
+}
+
+inline MMatrix createRingMatrix(const MMatrix& jointMatrix, const MVector& scale, short axisIndex = 0, const MPoint* targetPos = nullptr)
+{
+    const MPoint pos = taxis(jointMatrix);
+
+    const MVector rawY = getAxis(jointMatrix, axisIndex);
+    MVector Y = rawY.normal();
+
+    MVector jointX = maxis(jointMatrix, (unsigned int)((axisIndex + 1) % 3));
+    MVector uX = jointX.normal();
+
+    if (targetPos)
+    {
+        const MVector V = *targetPos - pos;
+        if (V.length() > 1e-6)
+        {
+            MQuaternion Q = Y.rotateTo(V);
+            MMatrix rotMatrix = Q.asMatrix();
+            Y = Y * rotMatrix;
+            uX = uX * rotMatrix;
+        }
+    }
+
+    MVector X = (uX - (uX * Y) * Y).normal();
+    MVector Z = (Y ^ X).normal();
+
+    X *= scale.x;
+    Y *= scale.y;
+    Z *= scale.z;
+
+    double m[4][4] = {
+        {X.x, X.y, X.z, 0.0},
+        {Y.x, Y.y, Y.z, 0.0},
+        {Z.x, Z.y, Z.z, 0.0},
+        {pos.x, pos.y, pos.z, 1.0}
+    };
+    return MMatrix(m);
+}
 
 inline MMatrix& set_maxis(MMatrix& mat, unsigned int a, const MVector& v)
 {

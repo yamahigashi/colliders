@@ -7,8 +7,6 @@
 #include <maya/MVector.h>
 #include <maya/MPoint.h>
 #include <maya/MGlobal.h>
-#include <maya/MQuaternion.h>
-
 #include <maya/MFnNurbsSurface.h>
 #include <maya/MFnNurbsSurfaceData.h>
 #include <maya/MFnNumericAttribute.h>
@@ -80,55 +78,6 @@ static MPointArray getCurvePoints(const MPointArray& points, int bellSubdivision
     cvs.set(cvs[1], count + 1);
     cvs.set(cvs[2], count + 2);
     return cvs;
-}
-
-static MVector getAxis(const MMatrix& m, short idx)
-{
-    // 0=X, 1=Y, 2=Z, 3=-X, 4=-Y, 5=-Z
-    const MVector v = maxis(m, (unsigned int)(idx % 3));
-    return idx >= 3 ? -v : v;
-}
-
-static MMatrix createRingMatrix(const MMatrix& jointMatrix, const MVector& scale, short axisIndex = 0, const MPoint* targetPos = nullptr)
-{
-    const MPoint pos = taxis(jointMatrix);
-
-    // Use the selected joint axis as the ring normal (Y row in the ring matrix).
-    const MVector rawY = getAxis(jointMatrix, axisIndex);
-    MVector Y = rawY.normal();
-
-    // Extract the remaining joint axes to preserve the joint's actual rotation/twist
-    MVector jointX = maxis(jointMatrix, (unsigned int)((axisIndex + 1) % 3));
-    MVector uX = jointX.normal();
-
-    // If targetPos is provided, rotate the axes using a quaternion to align Y with the direction vector
-    if (targetPos)
-    {
-        const MVector V = *targetPos - pos;
-        if (V.length() > 1e-6)
-        {
-            MQuaternion Q = Y.rotateTo(V);
-            MMatrix rotMatrix = Q.asMatrix();
-            Y = Y * rotMatrix;
-            uX = uX * rotMatrix;
-        }
-    }
-
-    // Project uX to be perpendicular to Y
-    MVector X = (uX - (uX * Y) * Y).normal();
-    MVector Z = (Y ^ X).normal();
-
-    X *= scale.x;
-    Y *= scale.y;
-    Z *= scale.z;
-
-    double m[4][4] = {
-        {X.x, X.y, X.z, 0.0},
-        {Y.x, Y.y, Y.z, 0.0},
-        {Z.x, Z.y, Z.z, 0.0},
-        {pos.x, pos.y, pos.z, 1.0}
-    };
-    return MMatrix(m);
 }
 
 static void drawCylinder(MHWRender::MUIDrawManager& drawManager, const MObject& mesh)

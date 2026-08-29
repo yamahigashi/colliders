@@ -3,6 +3,7 @@
 #include "bellCollider.h"
 #include "planeCollider.h"
 #include "skirtBellCollider.h"
+#include "skirtCollideDeformer.h"
 
 MStatus initializePlugin(MObject plugin)
 {
@@ -25,6 +26,9 @@ MStatus initializePlugin(MObject plugin)
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	stat = MHWRender::MDrawRegistry::registerDrawOverrideCreator(SkirtBellCollider::drawDbClassification, SkirtBellCollider::drawRegistrantId, SkirtBellColliderDrawOverride::creator);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.registerNode("skirtCollideDeformer", SkirtCollideDeformer::typeId, SkirtCollideDeformer::creator, SkirtCollideDeformer::initialize, MPxNode::kDeformerNode);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	return MS::kSuccess;
@@ -52,6 +56,9 @@ MStatus uninitializePlugin(MObject plugin)
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	stat = pluginFn.deregisterNode(SkirtBellCollider::typeId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.deregisterNode(SkirtCollideDeformer::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	return MS::kSuccess;
