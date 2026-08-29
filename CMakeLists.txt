@@ -17,6 +17,8 @@ set(sources
   sources/skirtBellCollider.h
   sources/skirtCollideDeformer.cpp
   sources/skirtCollideDeformer.h
+  sources/skirtWaveDeformer.cpp
+  sources/skirtWaveDeformer.h
   sources/utils.hpp)
 
 add_library(colliders SHARED ${sources})

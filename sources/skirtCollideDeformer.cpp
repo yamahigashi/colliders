@@ -30,6 +30,7 @@ MObject SkirtCollideDeformer::attr_leftRingAxis;
 MObject SkirtCollideDeformer::attr_rightRingAxis;
 MObject SkirtCollideDeformer::attr_collision;
 MObject SkirtCollideDeformer::attr_falloff;
+MObject SkirtCollideDeformer::attr_endFade;
 
 struct RingVolume
 {
@@ -54,6 +55,15 @@ static bool isFinitePoint(const MPoint& point)
 {
     return std::isfinite(point.x) && std::isfinite(point.y)
         && std::isfinite(point.z) && std::isfinite(point.w);
+}
+
+static double smooth01(double t)
+{
+    if (t <= 0.0)
+        return 0.0;
+    if (t >= 1.0)
+        return 1.0;
+    return t * t * (3.0 - 2.0 * t);
 }
 
 static void appendRingVolume(const MMatrix& ringMatrix, std::vector<RingVolume>& ringVolumes)
@@ -150,12 +160,18 @@ MStatus SkirtCollideDeformer::initialize()
     nAttr.setKeyable(true);
     addAttribute(attr_falloff);
 
+    attr_endFade = nAttr.create("endFade", "endFade", MFnNumericData::kFloat, 0.1f);
+    nAttr.setMin(0.0f);
+    nAttr.setMax(0.5f);
+    nAttr.setKeyable(true);
+    addAttribute(attr_endFade);
+
     const MObject affects[] = {
         attr_bellMatrix,
         attr_leftHipMatrix, attr_leftKneeMatrix, attr_leftHeelMatrix,
         attr_rightHipMatrix, attr_rightKneeMatrix, attr_rightHeelMatrix,
         attr_skirtType, attr_ringScale, attr_leftRingAxis, attr_rightRingAxis,
-        attr_collision, attr_falloff
+        attr_collision, attr_falloff, attr_endFade
     };
     for (const MObject& attr : affects)
     {
@@ -197,6 +213,8 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     const float collision = dataBlock.inputValue(attr_collision, &stat).asFloat();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
     const float falloff = dataBlock.inputValue(attr_falloff, &stat).asFloat();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const float endFade = dataBlock.inputValue(attr_endFade, &stat).asFloat();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
     const float envelopeValue = dataBlock.inputValue(envelope, &stat).asFloat();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
@@ -265,7 +283,22 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
             MPoint pointRing = pointWorld * ringVolume.inverse;
             // The ring frame spans hip (y=0) to target (y=1); the mirrored y<0 lobe
             // is above the hip and must never collide (it grabbed the waist rows).
-            if (pointRing.y <= 0.0 || pointRing.y > 1.0)
+            // Both ends fade smoothly (crossing a hard y gate popped the correction
+            // on and off); the far end fades OUTSIDE (0,1] so the hem keeps full
+            // coverage at y <= 1.
+            const double fade = (double)endFade;
+            const double y = pointRing.y;
+            if (y <= 0.0 || y >= 1.0 + fade)
+                continue;
+            double axialWeight = 1.0;
+            if (fade > 1e-8)
+            {
+                if (y < fade)
+                    axialWeight = smooth01(y / fade);
+                else if (y > 1.0)
+                    axialWeight = 1.0 - smooth01((y - 1.0) / fade);
+            }
+            else if (y > 1.0)
                 continue;
 
             // Cylinder volume (constant unit radius along the segment): the previous
@@ -276,6 +309,15 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
             const double r_xz = std::sqrt(pointRing.x * pointRing.x + pointRing.z * pointRing.z);
             if (r_xz >= r_needed + band)
                 continue;
+            // Outside the cylinder the bulge fades to zero at the radial gate, so
+            // entering/leaving the band region never steps.
+            double radialWeight = 1.0;
+            if (r_xz > r_needed)
+            {
+                if (band <= 1e-8)
+                    continue;
+                radialWeight = 1.0 - smooth01((r_xz - r_needed) / band);
+            }
 
             // Direction in ring local XZ, from the bell-radial reference; fall back to
             // the point's own radial direction when the reference degenerates.
@@ -288,30 +330,42 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
             else
                 pushDirection = MVector(1.0, 0.0, 0.0);
 
-            // Signed extent along the push direction; tunneled points are negative and
-            // land back on the near-side boundary. C1 soft clamp as before.
+            // Decompose the XZ offset into the push direction and its perpendicular.
+            // The exit lies on the CHORD at s_boundary = sqrt(R^2 - q^2), not at the
+            // full radius: pushing every point to s = R shoved grazing contacts
+            // (|q| near R) a full radius sideways and hurled near-outside points
+            // placed perpendicular to the push direction - the boundary rattling.
             const double s_current = pointRing.x * pushDirection.x + pointRing.z * pushDirection.z;
+            const double q_x = pointRing.x - pushDirection.x * s_current;
+            const double q_z = pointRing.z - pushDirection.z * s_current;
+            const double q_sq = q_x * q_x + q_z * q_z;
+            const double s_boundary = q_sq >= r_needed * r_needed
+                ? 0.0
+                : std::sqrt(r_needed * r_needed - q_sq);
+
+            // Signed extent along the push direction; tunneled points are negative and
+            // land back on the near-side chord exit. C1 soft clamp as before.
             double s_target;
             if (band > 1e-8)
             {
-                if (s_current >= r_needed + band)
+                if (s_current >= s_boundary + band)
                     continue;
-                if (s_current <= r_needed - band)
-                    s_target = r_needed;
+                if (s_current <= s_boundary - band)
+                    s_target = s_boundary;
                 else
                 {
-                    const double t = s_current - r_needed + band;
-                    s_target = r_needed + (t * t) / (4.0 * band);
+                    const double t = s_current - s_boundary + band;
+                    s_target = s_boundary + (t * t) / (4.0 * band);
                 }
             }
             else
             {
-                if (s_current >= r_needed)
+                if (s_current >= s_boundary)
                     continue;
-                s_target = r_needed;
+                s_target = s_boundary;
             }
 
-            const double shift = (s_target - s_current) * strength;
+            const double shift = (s_target - s_current) * strength * axialWeight * radialWeight;
             pointRing.x += pushDirection.x * shift;
             pointRing.z += pushDirection.z * shift;
 

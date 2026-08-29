@@ -25,6 +25,7 @@ public:
     static MObject attr_rightRingAxis;
     static MObject attr_collision;
     static MObject attr_falloff;
+    static MObject attr_endFade;
 
     SkirtCollideDeformer() : MPxDeformerNode() {}
     virtual ~SkirtCollideDeformer() override {}

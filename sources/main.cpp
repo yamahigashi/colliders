@@ -4,6 +4,7 @@
 #include "planeCollider.h"
 #include "skirtBellCollider.h"
 #include "skirtCollideDeformer.h"
+#include "skirtWaveDeformer.h"
 
 MStatus initializePlugin(MObject plugin)
 {
@@ -31,6 +32,9 @@ MStatus initializePlugin(MObject plugin)
 	stat = pluginFn.registerNode("skirtCollideDeformer", SkirtCollideDeformer::typeId, SkirtCollideDeformer::creator, SkirtCollideDeformer::initialize, MPxNode::kDeformerNode);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
+	stat = pluginFn.registerNode("skirtWaveDeformer", SkirtWaveDeformer::typeId, SkirtWaveDeformer::creator, SkirtWaveDeformer::initialize, MPxNode::kDeformerNode);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
 	return MS::kSuccess;
 }
 
@@ -56,6 +60,9 @@ MStatus uninitializePlugin(MObject plugin)
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	stat = pluginFn.deregisterNode(SkirtBellCollider::typeId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.deregisterNode(SkirtWaveDeformer::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	stat = pluginFn.deregisterNode(SkirtCollideDeformer::typeId);
