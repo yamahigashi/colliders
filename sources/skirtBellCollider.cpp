@@ -56,6 +56,8 @@ MObject SkirtBellCollider::attr_ringSubdivision;
 MObject SkirtBellCollider::attr_falloff;
 MObject SkirtBellCollider::attr_collision;
 MObject SkirtBellCollider::attr_tightness;
+MObject SkirtBellCollider::attr_smoothness;
+MObject SkirtBellCollider::attr_follow;
 MObject SkirtBellCollider::attr_bellScaleRamp;
 MObject SkirtBellCollider::attr_leftRingAxis;
 MObject SkirtBellCollider::attr_rightRingAxis;
@@ -236,6 +238,18 @@ MStatus SkirtBellCollider::initialize()
     nAttr.setKeyable(true);
     addAttribute(attr_tightness);
 
+    attr_smoothness = nAttr.create("smoothness", "smoothness", MFnNumericData::kFloat, 0.0f);
+    nAttr.setMin(0.0f);
+    nAttr.setMax(1.0f);
+    nAttr.setKeyable(true);
+    addAttribute(attr_smoothness);
+
+    attr_follow = nAttr.create("follow", "follow", MFnNumericData::kFloat, 0.0f);
+    nAttr.setMin(0.0f);
+    nAttr.setMax(1.0f);
+    nAttr.setKeyable(true);
+    addAttribute(attr_follow);
+
     // Bell Scale Ramp (Curve)
     attr_bellScaleRamp = MRampAttribute::createCurveRamp("bellScaleRamp", "bellScaleRamp");
     addAttribute(attr_bellScaleRamp);
@@ -284,8 +298,8 @@ MStatus SkirtBellCollider::initialize()
         attr_bellMatrix, attr_leftHipMatrix, attr_leftKneeMatrix, attr_leftHeelMatrix,
         attr_rightHipMatrix, attr_rightKneeMatrix, attr_rightHeelMatrix, attr_skirtType,
         attr_height, attr_ringScale, attr_bellScale, attr_bellSubdivision, attr_ringSubdivision,
-        attr_falloff, attr_collision, attr_tightness, attr_bellScaleRamp, attr_leftRingAxis,
-        attr_rightRingAxis, attr_bellAxis
+        attr_falloff, attr_collision, attr_tightness, attr_smoothness, attr_follow,
+        attr_bellScaleRamp, attr_leftRingAxis, attr_rightRingAxis, attr_bellAxis
     };
     for (const MObject& attr : affects) {
         attributeAffects(attr, attr_outputSurface);
@@ -300,6 +314,7 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
         return MS::kUnknownParameter;
 
     MStatus stat;
+    const double kFollowDamping = 0.5;
 
     // Get input values
     const MMatrix inputBellMatrix = dataBlock.inputValue(attr_bellMatrix).asMatrix();
@@ -319,6 +334,8 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
     const float falloff = dataBlock.inputValue(attr_falloff).asFloat();
     const float collision = dataBlock.inputValue(attr_collision).asFloat();
     const float tightness = dataBlock.inputValue(attr_tightness).asFloat();
+    const float smoothness = dataBlock.inputValue(attr_smoothness).asFloat();
+    const float follow = dataBlock.inputValue(attr_follow).asFloat();
     const short leftRingAxis = dataBlock.inputValue(attr_leftRingAxis).asShort();
     const short rightRingAxis = dataBlock.inputValue(attr_rightRingAxis).asShort();
     const short bellAxis = dataBlock.inputValue(attr_bellAxis).asShort();
@@ -414,6 +431,7 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
     }
 
     vector<MPointArray> rows(N + 1);
+    vector<MVector> deltaDirect(N, MVector(0, 0, 0));
     MPointArray controlPoints;
     MDoubleArray uKnots;
     MDoubleArray vKnots;
@@ -481,7 +499,7 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
         };
         const MMatrix bellMatrix(m);
 
-        auto solveForRings = [&](const vector<MMatrix>& rings, MPointArray& outBottom, MPointArray& outTop) -> MStatus {
+        auto solveForRings = [&](const vector<MMatrix>& rings, MPointArray& outBottom, MPointArray& outTop, MVector& outMeanDisplacement) -> MStatus {
             BellColliderInputs inputs;
             inputs.bellMatrix = bellMatrix;
             inputs.ringMatrices = rings;
@@ -490,6 +508,8 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
             inputs.bellBottomRadius = scale_bottom / scale_top;
             inputs.falloff = falloff;
             inputs.collision = collision;
+            inputs.smoothness = smoothness;
+            inputs.followGain = follow * (levelDistances[i + 1] / h_safe) * kFollowDamping;
 
             BellColliderOutputs outputs;
             const MStatus solveStat = BellColliderSolver::solve(inputs, outputs);
@@ -505,6 +525,7 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 
             if (i == 0) outBottom = getCurvePoints(meshPoints, bellSubdivision, true);
             outTop = getCurvePoints(meshPoints, bellSubdivision, false);
+            outMeanDisplacement = outputs.meanDisplacement;
 
             return MS::kSuccess;
         };
@@ -520,22 +541,26 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
             ringsWithKnee.push_back(rightHipToKneeExtended);
 
             MPointArray topWith, topWithout;
+            MVector directWith(0, 0, 0);
+            MVector directWithout(0, 0, 0);
 
             if (tightness < 1.0f) {
                 MPointArray dummy;
-                MStatus s = solveForRings(ringsWithKnee, dummy, topWith);
+                MStatus s = solveForRings(ringsWithKnee, dummy, topWith, directWith);
                 if (s != MS::kSuccess) return s;
             }
             if (tightness > 0.0f) {
                 MPointArray dummy;
-                MStatus s = solveForRings(ringsWithoutKnee, dummy, topWithout);
+                MStatus s = solveForRings(ringsWithoutKnee, dummy, topWithout, directWithout);
                 if (s != MS::kSuccess) return s;
             }
 
             if (tightness <= 0.0f) {
                 rows[i + 1] = topWith;
+                deltaDirect[i] = directWith;
             } else if (tightness >= 1.0f) {
                 rows[i + 1] = topWithout;
+                deltaDirect[i] = directWithout;
             } else {
                 MPointArray blendedTop;
                 blendedTop.setLength(topWith.length());
@@ -543,6 +568,7 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
                     blendedTop.set(topWith[j] * (1.0 - tightness) + topWithout[j] * tightness, j);
                 }
                 rows[i + 1] = blendedTop;
+                deltaDirect[i] = directWith * (1.0 - tightness) + directWithout * tightness;
             }
         }
         else
@@ -558,10 +584,55 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
             }
 
             MPointArray bottom, top;
-            MStatus s = solveForRings(bellRings, bottom, top);
+            MVector directDisplacement;
+            MStatus s = solveForRings(bellRings, bottom, top, directDisplacement);
             if (s != MS::kSuccess) return s;
             if (i == 0) rows[0] = bottom;
             rows[i + 1] = top;
+            deltaDirect[i] = directDisplacement;
+        }
+    }
+
+    // Layer 3 runs only when it adds displacement; re-relaxing untouched rows would deepen the residual to (1-c)^2.
+    if (follow > 0.0f)
+    {
+        MVector cumulativeDirect(0, 0, 0);
+        for (int r = 2; r <= N; r++)
+        {
+            cumulativeDirect += deltaDirect[r - 2];
+            const double rowTightness = skirtType == 1 && r == N ? tightness : 0.0;
+            const MVector propagation = cumulativeDirect * (follow * (1.0 - rowTightness));
+
+            for (int j = 0; j < bellSubdivision; j++)
+                rows[r][j] += propagation;
+
+            if (skirtType == 1 && r == N)
+            {
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], leftHipToHeel, collision, 0, bellSubdivision);
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], rightHipToHeel, collision, 0, bellSubdivision);
+
+                if (tightness < 1.0f)
+                {
+                    const double kneeCollision = collision * (1.0 - tightness);
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], leftHipToKneeExtended, kneeCollision, 0, bellSubdivision);
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], rightHipToKneeExtended, kneeCollision, 0, bellSubdivision);
+                }
+            }
+            else
+            {
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], leftHipToKnee, collision, 0, bellSubdivision);
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], rightHipToKnee, collision, 0, bellSubdivision);
+
+                if (skirtType == 1)
+                {
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], leftHipToHeel, collision, 0, bellSubdivision);
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], rightHipToHeel, collision, 0, bellSubdivision);
+                }
+            }
+
+            // Solver mesh top CVs start at bellSubdivision + 1; surface rows start at 0 and keep three periodic duplicates.
+            for (int j = 0; j < 3; j++)
+                rows[r].set(rows[r][j], bellSubdivision + j);
         }
     }
 

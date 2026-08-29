@@ -113,13 +113,39 @@ static MObject makeBellCurve(const MPointArray &points, int bellSubdivision, boo
     return curveData;
 }
 
+void BellColliderSolver::relaxTowardRingBoundary(MPointArray& points, const MMatrix& ringMatrix, double collision, int startIndex, int count)
+{
+    if (!(collision > 1e-5))
+        return;
+
+    const MMatrix ringMatrixInverse = ringMatrix.inverse();
+    const MVector ringDirection = maxis(ringMatrix, 1); // Y axis
+    const MPoint ring_translate = taxis(ringMatrix);
+    const MVector ringNormal = ringDirection.normal();
+    const Plane ringPlane(ring_translate, ringNormal);
+
+    for (int j = startIndex; j < startIndex + count; j++)
+    {
+        const MVector vec = ringPlane.projectPoint(points[j]) - ring_translate;
+        double vec_len = vec.length();
+        if (vec_len > 1e-5)
+        {
+            double local_len = (vec * ringMatrixInverse).length();
+            double delta = local_len > 1e-5 ? vec_len / local_len : 1.0;
+            const MVector vec_proj_scaled = vec.normal() * delta; // scale vector
+
+            if (vec_proj_scaled.length() > vec_len)
+                points[j] += vec.normal() * (vec_proj_scaled.length() - vec_len) * collision;
+        }
+    }
+}
+
 void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MPointArray& baseBellPoints, const Plane& bellPlane, vector<MPointArray>& bellPointsList)
 {
     const MMatrix bellMatrix = inputs.bellMatrix;
     const MMatrix bellMatrixInverse = bellMatrix.inverse();
     const int bellSubdivision = inputs.bellSubdivision;
     const float falloff = inputs.falloff;
-    const float collision = inputs.collision;
 
     const MPoint bell_translate = taxis(bellMatrix);
     const MVector bellAxis = maxis(bellMatrix, 1); // Y axis
@@ -200,6 +226,8 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MP
                     {
                         double divisor = 1.0 - falloff;
                         weight = divisor > 1e-5 ? (weight - falloff) / divisor : 1.0;
+                        if (inputs.smoothness > 0.0)
+                            weight = weight * weight * (3.0 - 2.0 * weight);
 
                         const MPoint rp = bellPoints[j] * rotateMatrixInverse * rotateMatrix;
 
@@ -214,30 +242,19 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MP
             }
         }
 
-        // ring collision
-        if (collision > 1e-5)
-        {
-            for (int j = bellSubdivision + 1; j < (int)bellPoints.length(); j++)
-            {                    
-                const MVector vec = ringPlane.projectPoint(bellPoints[j]) - ring_translate;
-                double vec_len = vec.length();
-                if (vec_len > 1e-5)
-                {
-                    double local_len = (vec * ringMatrixInverse).length();
-                    double delta = local_len > 1e-5 ? vec_len / local_len : 1.0;
-                    const MVector vec_proj_scaled = vec.normal() * delta; // scale vector
-
-                    if (vec_proj_scaled.length() > vec_len)
-                        bellPoints[j] += vec.normal() * (vec_proj_scaled.length() - vec_len) * collision;
-                }
-            }
-        }
+        relaxTowardRingBoundary(
+            bellPoints,
+            ringMatrix,
+            inputs.collision,
+            bellSubdivision + 1,
+            (int)bellPoints.length() - bellSubdivision - 1
+        );
 
         bellPointsList.push_back(bellPoints);
     }
 }
 
-void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const vector<MPointArray>& bellPointsList, MPointArray& outBellPoints)
+void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const vector<MPointArray>& bellPointsList, MPointArray& outBellPoints, bool useUnnormalized)
 {
     outBellPoints = baseBellPoints;
 
@@ -267,10 +284,17 @@ void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointA
                 wp += vec * w;
             }
 
-            double wp_len = wp.length();
-            if (wp_len > 1e-5)
+            if (useUnnormalized)
             {
-                outBellPoints[i] += wp.normal() * maxDist;
+                outBellPoints[i] += wp;
+            }
+            else
+            {
+                double wp_len = wp.length();
+                if (wp_len > 1e-5)
+                {
+                    outBellPoints[i] += wp.normal() * maxDist;
+                }
             }
         }
     }
@@ -286,6 +310,9 @@ MStatus BellColliderSolver::solve(const BellColliderInputs& inputs, BellCollider
     const MVector bellAxis = maxis(bellMatrix, 1); // Y axis
     const MVector bellNormal = bellAxis.normal();
     const Plane bellPlane(bell_translate, bellNormal);
+    const bool gate = inputs.smoothness > 0.0 || inputs.followGain > 0.0;
+
+    outputs.meanDisplacement = MVector(0, 0, 0);
 
     MObject bellMesh = makeBellMesh(bellMatrix, 1, bellSubdivision, 1, bellBottomRadius, 1);
     MFnMesh bellMeshFn(bellMesh);
@@ -297,7 +324,55 @@ MStatus BellColliderSolver::solve(const BellColliderInputs& inputs, BellCollider
     deformPoints(inputs, baseBellPoints, bellPlane, bellPointsList);
 
     MPointArray outBellPoints;
-    averageDisplacements(bellSubdivision, baseBellPoints, bellPointsList, outBellPoints);
+    averageDisplacements(bellSubdivision, baseBellPoints, bellPointsList, outBellPoints, gate);
+
+    if (gate)
+    {
+        const int startIndex = bellSubdivision + 1;
+        vector<MVector> displacements(bellSubdivision);
+        MVector weightedDisplacement(0, 0, 0);
+        double displacementLengthSum = 0.0;
+
+        for (int i = 0; i < bellSubdivision; i++)
+        {
+            const MVector displacement = outBellPoints[startIndex + i] - baseBellPoints[startIndex + i];
+            const double displacementLength = displacement.length();
+            displacements[i] = displacement;
+            weightedDisplacement += displacement * displacementLength;
+            displacementLengthSum += displacementLength;
+        }
+
+        const MVector meanDisplacement = displacementLengthSum < 1e-12
+            ? MVector(0, 0, 0)
+            : bellPlane.projectVector(weightedDisplacement / displacementLengthSum);
+        outputs.meanDisplacement = meanDisplacement;
+
+        for (int i = 0; i < bellSubdivision; i++)
+            displacements[i] += meanDisplacement * inputs.followGain;
+
+        const double alpha = inputs.smoothness * 0.5;
+        if (alpha != 0.0)
+        {
+            vector<MVector> smoothedDisplacements(bellSubdivision);
+            for (int iteration = 0; iteration < 3; iteration++)
+            {
+                for (int i = 0; i < bellSubdivision; i++)
+                {
+                    const int previous = (i + bellSubdivision - 1) % bellSubdivision;
+                    const int next = (i + 1) % bellSubdivision;
+                    smoothedDisplacements[i] = displacements[i] * (1.0 - alpha)
+                        + (displacements[previous] + displacements[next]) * (alpha * 0.5);
+                }
+                displacements.swap(smoothedDisplacements);
+            }
+        }
+
+        for (int i = 0; i < bellSubdivision; i++)
+            outBellPoints.set(baseBellPoints[startIndex + i] + displacements[i], startIndex + i);
+
+        for (const auto& ringMatrix : inputs.ringMatrices)
+            relaxTowardRingBoundary(outBellPoints, ringMatrix, inputs.collision, startIndex, bellSubdivision);
+    }
 
     bellMeshFn.setPoints(outBellPoints);
 

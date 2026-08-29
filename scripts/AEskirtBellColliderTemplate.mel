@@ -12,6 +12,8 @@ global proc AEskirtBellColliderTemplate( string $nodeName )
             editorTemplate -addControl "falloff";
             editorTemplate -addControl "collision";
             editorTemplate -addControl "tightness";
+            editorTemplate -addControl "smoothness";
+            editorTemplate -addControl "follow";
             
             // Display as a ramp curve control instead of basic ramp attributes
             AEaddRampControl( $nodeName + ".bellScaleRamp" );
