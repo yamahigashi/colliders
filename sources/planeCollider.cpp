@@ -50,8 +50,8 @@ MString PlaneCollider::drawRegistrantId = "collidersPlugin";
 
 MStatus PlaneCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 {
-    if (plug != attr_outputPosition)
-        return MS::kFailure;
+    if (plug != attr_outputPosition && !(plug.isChild() && plug.parent() == attr_outputPosition))
+        return MS::kUnknownParameter;
 
     const MMatrix planeMatrix = dataBlock.inputValue(attr_planeMatrix).asMatrix();
     const short normalAxis = dataBlock.inputValue(attr_normalAxis).asShort();
@@ -67,9 +67,10 @@ MStatus PlaneCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
     if (plane.distance(inputPosition) < 0)
         outputPosition = plane.projectPoint(inputPosition);
 
-    dataBlock.outputValue(attr_outputPosition).setMVector(outputPosition);
-
-    dataBlock.setClean(attr_outputPosition);
+    MDataHandle outputHandle = dataBlock.outputValue(attr_outputPosition);
+    outputHandle.setMVector(outputPosition);
+    outputHandle.setClean();
+    dataBlock.setClean(plug);
 
     return MS::kSuccess;
 }

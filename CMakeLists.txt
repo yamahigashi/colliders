@@ -9,12 +9,14 @@ set(sources
   sources/main.cpp 
   sources/bellCollider.cpp
   sources/bellCollider.h
+  sources/colliderDrawGeometry.h
   sources/bellColliderSolver.cpp
   sources/bellColliderSolver.h
   sources/planeCollider.cpp
   sources/planeCollider.h
   sources/skirtBellCollider.cpp
   sources/skirtBellCollider.h
+  sources/skirtRingFrames.h
   sources/skirtCollideDeformer.cpp
   sources/skirtCollideDeformer.h
   sources/skirtWaveDeformer.cpp

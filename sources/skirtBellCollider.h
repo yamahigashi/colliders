@@ -10,13 +10,12 @@
 #include <maya/MColor.h>
 #include <maya/MObject.h>
 #include <vector>
+#include "colliderDrawGeometry.h"
 
 struct SkirtDrawData
 {
-    std::vector<MPointArray> bellCurves;
-    std::vector<MObject> ringMeshList;
-    std::vector<MMatrix> ringMatrices;
-    int ringSubdivision = 16;
+    ColliderDraw::Curves curves;
+    ColliderDraw::Rings rings;
     MColor color;
 };
 

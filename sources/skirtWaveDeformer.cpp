@@ -476,8 +476,23 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         return MS::kSuccess;
     }
 
+    if (amplitude == 0.0 || envelopeValue == 0.0f)
+        return MS::kSuccess;
+
     const MPoint bellPosition = taxis(bellMatrix);
     const MVector bellAxis = rawBellAxis / globalScale;
+
+    // World (default): X/Z are global axes, projected off the cone axis so the
+    // keyed direction matches viewport intuition. Bell Local: the waist frame.
+    const bool impulseUseWorld = (impulseSpace == 0);
+    MVector impulseVector(impulseX, 0.0, impulseZ);
+    if (impulseUseWorld)
+        impulseVector -= bellAxis * (impulseVector * bellAxis);
+    const double impulseLength = impulseVector.length();
+
+    if (idleAmplitude == 0.0 && impulseLength < kImpulseTolerance
+        && noiseAmplitude < kImpulseTolerance)
+        return MS::kSuccess;
 
     std::vector<WavePoint> points;
     double maximumHeight = -kMinimumHemHeight;
@@ -505,14 +520,6 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     const MMatrix worldToLocalMatrix = localToWorldMatrix.inverse();
     const double goldenRatio = (1.0 + std::sqrt(5.0)) * 0.5;
 
-    // World (default): X/Z are global axes, projected off the cone axis so the
-    // keyed direction matches viewport intuition. Bell Local: the waist frame.
-    const bool impulseUseWorld = (impulseSpace == 0);
-    MVector impulseVector(impulseX, 0.0, impulseZ);
-    if (impulseUseWorld)
-        impulseVector -= bellAxis * (impulseVector * bellAxis);
-    const double impulseLength = impulseVector.length();
-
     MPointArray outputPoints;
     stat = outputPoints.setLength(static_cast<unsigned int>(points.size()));
     CHECK_MSTATUS_AND_RETURN_IT(stat);
@@ -521,7 +528,7 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     {
         const WavePoint& point = points[index];
         MPoint outputPoint = point.objectPoint;
-        if (!point.finite)
+        if (!point.finite || point.weight == 0.0f)
         {
             outputPoints.set(outputPoint, index);
             continue;
@@ -547,26 +554,37 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         }
         radialWorld.normalize();
 
-        const double phiV = 2.0 * kPi * (wavePhaseV - waveCountV * v);
-        const double phiU = waveCountU * (theta - 2.0 * kPi * wavePhaseU);
-        const double phiV2 = 2.0 * kPi
-            * (goldenRatio * wavePhaseV - waveCountV * v)
-            + 0.5 * kPi;
-        const double phiU2 = waveCountU
-            * (theta - 2.0 * kPi * goldenRatio * wavePhaseU)
-            + 0.5 * kPi;
-
-        const double basePrimary = waveCountU > 0
-            ? 0.5 * (shapedSine(phiV, skew, sharpness)
-                + shapedSine(phiU, skew, sharpness))
-            : shapedSine(phiV, skew, sharpness);
-        const double baseSecondary = waveCountU > 0
-            ? 0.5 * (shapedSine(phiV2, skew, sharpness)
-                + shapedSine(phiU2, skew, sharpness))
-            : shapedSine(phiV2, skew, sharpness);
-        const double idleWave = idleAmplitude
-            * ((1.0 - idleComplexity) * basePrimary
-                + idleComplexity * baseSecondary);
+        double idleWave = 0.0;
+        if (idleAmplitude != 0.0)
+        {
+            double basePrimary = 0.0;
+            if (idleComplexity != 1.0)
+            {
+                const double phiV = 2.0 * kPi * (wavePhaseV - waveCountV * v);
+                const double phiU = waveCountU * (theta - 2.0 * kPi * wavePhaseU);
+                basePrimary = waveCountU > 0
+                    ? 0.5 * (shapedSine(phiV, skew, sharpness)
+                        + shapedSine(phiU, skew, sharpness))
+                    : shapedSine(phiV, skew, sharpness);
+            }
+            double baseSecondary = 0.0;
+            if (idleComplexity != 0.0)
+            {
+                const double phiV2 = 2.0 * kPi
+                    * (goldenRatio * wavePhaseV - waveCountV * v)
+                    + 0.5 * kPi;
+                const double phiU2 = waveCountU
+                    * (theta - 2.0 * kPi * goldenRatio * wavePhaseU)
+                    + 0.5 * kPi;
+                baseSecondary = waveCountU > 0
+                    ? 0.5 * (shapedSine(phiV2, skew, sharpness)
+                        + shapedSine(phiU2, skew, sharpness))
+                    : shapedSine(phiV2, skew, sharpness);
+            }
+            idleWave = idleAmplitude
+                * ((1.0 - idleComplexity) * basePrimary
+                    + idleComplexity * baseSecondary);
+        }
 
         const double impulseDot = impulseUseWorld
             ? (radialWorld * impulseVector)

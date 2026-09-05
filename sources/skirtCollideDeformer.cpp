@@ -219,6 +219,9 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     const float envelopeValue = dataBlock.inputValue(envelope, &stat).asFloat();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
 
+    if (collision == 0.0f || envelopeValue == 0.0f)
+        return MS::kSuccess;
+
     const MPoint LH = taxis(leftHipMatrix);
     const MPoint LK = taxis(leftKneeMatrix);
     const MPoint LHe = taxis(leftHeelMatrix);
@@ -288,11 +291,13 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
             // coverage at y <= 1.
             const double fade = (double)endFade;
             const double y = pointRing.y;
-            if (y <= 0.0 || y >= 1.0 + fade)
+            if (y <= 0.0)
                 continue;
             double axialWeight = 1.0;
             if (fade > 1e-8)
             {
+                if (y >= 1.0 + fade)
+                    continue;
                 if (y < fade)
                     axialWeight = smooth01(y / fade);
                 else if (y > 1.0)

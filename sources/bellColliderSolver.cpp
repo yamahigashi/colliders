@@ -4,9 +4,7 @@
 #include <maya/MFnNurbsCurveData.h>
 #include <maya/MTransformationMatrix.h>
 #include <maya/MQuaternion.h>
-#include <maya/MEulerRotation.h>
 #include <maya/MIntArray.h>
-#include <maya/MPointArray.h>
 #include <maya/MDoubleArray.h>
 #include <cmath>
 
@@ -15,84 +13,78 @@
 
 using namespace std;
 
-static double wrapParam(double param, double minParam, double maxParam)
+void BellColliderSolver::roundMeshPoints(MPointArray &points)
 {
-    double range = maxParam - minParam;
-    if (range <= 0.0) return minParam;
-    double p = param - minParam;
-    p = fmod(p, range);
-    if (p < 0.0) p += range;
-    return p + minParam;
+    // MFnMesh create/setPoints stores float coordinates; retain that boundary
+    // when a caller consumes mesh-equivalent points without creating a mesh.
+    for (unsigned int i = 0; i < points.length(); ++i)
+        points.set(
+            MPoint(static_cast<float>(points[i].x), static_cast<float>(points[i].y), static_cast<float>(points[i].z)),
+            i);
 }
 
-MObject BellColliderSolver::makeBellMesh(const MMatrix& matrix, unsigned int axis, unsigned int numSides, double height, double bottomRadius, double topRadius)
+MPointArray BellColliderSolver::makeBellPoints(const MMatrix &matrix, unsigned int axis, unsigned int numSides,
+                                               double height, double bottomRadius, double topRadius)
 {
-    const int numVertices = numSides * 2 + 1;
-    const int numPolygons = numSides * 2;
-
-    MPointArray vertexArray;
-    MIntArray polygonCounts, polygonConnects;
-
-    vertexArray.append(MPoint(0, 0, 0) * matrix);
-
-    // bottom
-    for (int i = 0; i < numSides; i++)
+    MPointArray points;
+    points.append(MPoint(0, 0, 0) * matrix);
+    for (int row = 0; row < 2; ++row)
     {
-        const double rad = (double)i / numSides * 2 * M_PI;
-        const double x = bottomRadius * cos(rad);
-        const double z = bottomRadius * sin(rad);
-        
-        MPoint p;
-        switch (axis)
+        const double radius = row == 0 ? bottomRadius : topRadius;
+        const double offset = row == 0 ? 0.0 : height;
+        for (unsigned int i = 0; i < numSides; ++i)
         {
-        case 0: p = MPoint(0, x, z); break;
-        case 1: p = MPoint(x, 0, z); break;
-        case 2: p = MPoint(x, z, 0); break;
+            const double rad = (double)i / numSides * 2 * M_PI;
+            const double x = radius * cos(rad);
+            const double z = radius * sin(rad);
+            MPoint p;
+            switch (axis)
+            {
+            case 0:
+                p = MPoint(offset, x, z);
+                break;
+            case 1:
+                p = MPoint(x, offset, z);
+                break;
+            case 2:
+                p = MPoint(x, z, offset);
+                break;
+            }
+            points.append(p * matrix);
         }
+    }
+    return points;
+}
 
-        vertexArray.append(p * matrix);
-
+MObject BellColliderSolver::makeBellMesh(const MPointArray &points, unsigned int numSides)
+{
+    MIntArray polygonCounts, polygonConnects;
+    for (unsigned int i = 0; i < numSides; ++i)
+    {
         polygonCounts.append(3);
         polygonConnects.append(0);
-        polygonConnects.append(i + 1); // i=0 is center
+        polygonConnects.append(i + 1);
         polygonConnects.append(i == numSides - 1 ? 1 : i + 2);
     }
-
-    // top
-    for (int i = 0; i < numSides; i++)
+    for (unsigned int i = 0; i < numSides; ++i)
     {
-        const double rad = (double)i / numSides * 2 * M_PI;
-        const double x = topRadius * cos(rad);
-        const double z = topRadius * sin(rad);
-
-        MPoint p;
-        switch (axis)
-        {
-        case 0: p = MPoint(height, x, z); break;
-        case 1: p = MPoint(x, height, z); break;
-        case 2: p = MPoint(x, z, height); break;
-        }
-        vertexArray.append(p * matrix);
-
         polygonCounts.append(4);
-        polygonConnects.append(i + 1); // i=0 is center
+        polygonConnects.append(i + 1);
         polygonConnects.append(numSides + i + 1);
         polygonConnects.append(i == numSides - 1 ? numSides + 1 : numSides + i + 2);
         polygonConnects.append(i == numSides - 1 ? 1 : i + 2);
     }
-
     MFnMeshData meshData;
     MObject meshObject = meshData.create();
-
     MFnMesh meshFn;
-    meshFn.create(numVertices, numPolygons, vertexArray, polygonCounts, polygonConnects, meshObject);
+    meshFn.create(points.length(), numSides * 2, points, polygonCounts, polygonConnects, meshObject);
     return meshObject;
 }
 
-static MObject makeBellCurve(const MPointArray &points, int bellSubdivision, bool use_bottom=false)
+MObject BellColliderSolver::makeBellCurve(const MPointArray &points, int bellSubdivision)
 {
-    const int START = use_bottom ? 1 : bellSubdivision + 1;
-    const int END = use_bottom ? bellSubdivision : points.length();
+    const int START = bellSubdivision + 1;
+    const int END = points.length();
 
     MPointArray cvs;
     MDoubleArray knots;
@@ -113,16 +105,15 @@ static MObject makeBellCurve(const MPointArray &points, int bellSubdivision, boo
     return curveData;
 }
 
-void BellColliderSolver::relaxTowardRingBoundary(MPointArray& points, const MMatrix& ringMatrix, double collision, int startIndex, int count)
+void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
+                                                 int startIndex, int count)
 {
     if (!(collision > 1e-5))
         return;
 
-    const MMatrix ringMatrixInverse = ringMatrix.inverse();
-    const MVector ringDirection = maxis(ringMatrix, 1); // Y axis
-    const MPoint ring_translate = taxis(ringMatrix);
-    const MVector ringNormal = ringDirection.normal();
-    const Plane ringPlane(ring_translate, ringNormal);
+    const MMatrix &ringMatrixInverse = ring.inverse;
+    const MPoint &ring_translate = ring.translation;
+    const Plane &ringPlane = ring.plane;
 
     for (int j = startIndex; j < startIndex + count; j++)
     {
@@ -140,6 +131,60 @@ void BellColliderSolver::relaxTowardRingBoundary(MPointArray& points, const MMat
     }
 }
 
+bool BellColliderSolver::collisionPoints(const MMatrix &bellMatrix, const MMatrix &bellMatrixInverse,
+                                         const Plane &bellPlane, const PreparedBellRing &ring,
+                                         MPoint &collisionPointBell, MPoint &collisionPointRing, MPoint &linePoint)
+{
+    const MMatrix &ringMatrixInverse = ring.inverse;
+    const MVector &ringDirection = ring.direction;
+    const MPoint &ring_translate = ring.translation;
+    const MVector &ringNormal = ring.normal;
+    const Plane &ringPlane = ring.plane;
+    const MVector bellAxis = maxis(bellMatrix, 1);
+    const MVector bellNormal = bellAxis.normal();
+    const MPoint ring_translate_proj = bellPlane.projectPoint(ring_translate);
+    const MVector ringDirection_proj = bellPlane.projectVector(ringDirection);
+    if (ringDirection_proj.length() <= 1e-3)
+        return false;
+    bool found = false;
+    const MPointArray hitPoints = findSphereLineIntersection(
+        ring_translate_proj * bellMatrixInverse, ringDirection_proj * bellMatrixInverse, MPoint(0, 0, 0), 1.001);
+
+    if (hitPoints.length() > 0)
+    {
+        collisionPointBell = hitPoints[0] * bellMatrix + bellAxis;
+
+        const double linePointCoeff = ringNormal * bellNormal > 0 ? 1 : -1;
+
+        const MVector ring_proj = ringPlane.projectVector(ringDirection_proj * linePointCoeff);
+        double delta = 1.0;
+        MVector ring_proj_scaled(0, 0, 0);
+        double ring_proj_len = ring_proj.length();
+        if (ring_proj_len > 1e-5)
+        {
+            double local_len = (ring_proj * ringMatrixInverse).length();
+            if (local_len > 1e-5)
+                delta = ring_proj_len / local_len;
+            ring_proj_scaled = ring_proj.normal() * delta;
+        }
+        linePoint = ring_translate + ring_proj_scaled;
+
+        const MPointArray sphereLinePoints = findSphereLineIntersection(linePoint, ringDirection, ring_translate,
+                                                                        (collisionPointBell - ring_translate).length());
+
+        for (int k = 0; k < sphereLinePoints.length(); k++)
+        {
+            if ((sphereLinePoints[k] - ring_translate) * ringDirection > 0)
+            {
+                collisionPointRing = sphereLinePoints[k];
+                found = true;
+            }
+        }
+    }
+
+    return found;
+}
+
 void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MPointArray& baseBellPoints, const Plane& bellPlane, vector<MPointArray>& bellPointsList)
 {
     const MMatrix bellMatrix = inputs.bellMatrix;
@@ -153,53 +198,18 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MP
 
     bellPointsList.clear();
 
-    for (const auto& ringMatrix : inputs.ringMatrices)
+    for (const auto &ring : inputs.rings)
     {
-        const MMatrix ringMatrixInverse = ringMatrix.inverse();
-
-        const MVector ringDirection = maxis(ringMatrix, 1); // Y axis
-        const MPoint ring_translate = taxis(ringMatrix);
-        const MVector ringNormal = ringDirection.normal();
-        const Plane ringPlane(ring_translate, ringNormal);
-
-        const MPoint ring_translate_proj = bellPlane.projectPoint(taxis(ringMatrix));
-        const MVector ringDirection_proj = bellPlane.projectVector(ringDirection);
+        const MPoint &ring_translate = ring.translation;
+        const MPoint ring_translate_proj = bellPlane.projectPoint(ring_translate);
+        const MVector ringDirection_proj = bellPlane.projectVector(ring.direction);
 
         MPointArray bellPoints = baseBellPoints;
 
-        if (ringDirection_proj.length() > 1e-3)
+        MPoint collisionPointBell, collisionPointRing, linePoint;
+        if (collisionPoints(bellMatrix, bellMatrixInverse, bellPlane, ring, collisionPointBell, collisionPointRing,
+                            linePoint))
         {
-            const MPointArray hitPoints = findSphereLineIntersection(ring_translate_proj * bellMatrixInverse, ringDirection_proj * bellMatrixInverse, MPoint(0,0,0), 1.001);
-
-            MPoint collisionPointBell, collisionPointRing;
-            if (hitPoints.length() > 0)
-            {
-                collisionPointBell = hitPoints[0] * bellMatrix + bellAxis;
-
-                const double linePointCoeff = ringNormal * bellNormal > 0 ? 1 : -1;
-
-                const MVector ring_proj = ringPlane.projectVector(ringDirection_proj * linePointCoeff);
-                double delta = 1.0;
-                MVector ring_proj_scaled(0, 0, 0);
-                double ring_proj_len = ring_proj.length();
-                if (ring_proj_len > 1e-5)
-                {
-                    double local_len = (ring_proj * ringMatrixInverse).length();
-                    if (local_len > 1e-5)
-                        delta = ring_proj_len / local_len;
-                    ring_proj_scaled = ring_proj.normal() * delta;
-                }
-                const MPoint linePoint = ring_translate + ring_proj_scaled;
-
-                const MPointArray sphereLinePoints = findSphereLineIntersection(linePoint, ringDirection, ring_translate, (collisionPointBell - ring_translate).length());
-
-                for (int k = 0; k < sphereLinePoints.length(); k++)
-                {
-                    if ((sphereLinePoints[k] - ring_translate) * ringDirection > 0)
-                        collisionPointRing = sphereLinePoints[k];
-                }
-            }
-
             double bellAxisLen = bellAxis.length();
             const double collisionDelta = bellAxisLen > 1e-5 ? (bellPlane.distance(collisionPointRing) - bellPlane.distance(collisionPointBell)) / bellAxisLen : 0.0;
             if (collisionDelta < 0)
@@ -242,13 +252,8 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MP
             }
         }
 
-        relaxTowardRingBoundary(
-            bellPoints,
-            ringMatrix,
-            inputs.collision,
-            bellSubdivision + 1,
-            (int)bellPoints.length() - bellSubdivision - 1
-        );
+        relaxTowardRingBoundary(bellPoints, ring, inputs.collision, bellSubdivision + 1,
+                                (int)bellPoints.length() - bellSubdivision - 1);
 
         bellPointsList.push_back(bellPoints);
     }
@@ -300,11 +305,11 @@ void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointA
     }
 }
 
-MStatus BellColliderSolver::solve(const BellColliderInputs& inputs, BellColliderOutputs& outputs)
+MStatus BellColliderSolver::solve(const BellColliderInputs &inputs, const MPointArray &baseBellPoints,
+                                  BellColliderOutputs &outputs)
 {
     const MMatrix bellMatrix = inputs.bellMatrix;
     const int bellSubdivision = inputs.bellSubdivision;
-    const float bellBottomRadius = inputs.bellBottomRadius;
 
     const MPoint bell_translate = taxis(bellMatrix);
     const MVector bellAxis = maxis(bellMatrix, 1); // Y axis
@@ -313,12 +318,6 @@ MStatus BellColliderSolver::solve(const BellColliderInputs& inputs, BellCollider
     const bool gate = inputs.smoothness > 0.0 || inputs.followGain > 0.0;
 
     outputs.meanDisplacement = MVector(0, 0, 0);
-
-    MObject bellMesh = makeBellMesh(bellMatrix, 1, bellSubdivision, 1, bellBottomRadius, 1);
-    MFnMesh bellMeshFn(bellMesh);
-
-    MPointArray baseBellPoints;
-    bellMeshFn.getPoints(baseBellPoints);
 
     vector<MPointArray> bellPointsList;
     deformPoints(inputs, baseBellPoints, bellPlane, bellPointsList);
@@ -370,16 +369,10 @@ MStatus BellColliderSolver::solve(const BellColliderInputs& inputs, BellCollider
         for (int i = 0; i < bellSubdivision; i++)
             outBellPoints.set(baseBellPoints[startIndex + i] + displacements[i], startIndex + i);
 
-        for (const auto& ringMatrix : inputs.ringMatrices)
-            relaxTowardRingBoundary(outBellPoints, ringMatrix, inputs.collision, startIndex, bellSubdivision);
+        for (const auto &ring : inputs.rings)
+            relaxTowardRingBoundary(outBellPoints, ring, inputs.collision, startIndex, bellSubdivision);
     }
 
-    bellMeshFn.setPoints(outBellPoints);
-
-    MObject outCurve = makeBellCurve(outBellPoints, bellSubdivision);
-
-    outputs.outputCurveData = outCurve;
-    outputs.outputBellMeshData = bellMesh;
-
+    outputs.points = outBellPoints;
     return MS::kSuccess;
 }

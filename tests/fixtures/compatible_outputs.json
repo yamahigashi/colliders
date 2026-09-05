@@ -1,0 +1,267 @@
+{
+  "provenance": {
+    "source_commit": "3e88538180ae7a856b394edeb4107e49439ecf5f",
+    "maya": "2026",
+    "python": "3.11.9 (tags/v3.11.9-dirty:de54cf5be37, Oct 18 2024, 09:47:19) [MSC v.1938 64 bit (AMD64)]",
+    "baseline_binary_sha256": "c543492e4c59a7472d926330b49320895176887740b1f12a674fe4dbc02f9557",
+    "encoding": "SHA-256 of little-endian IEEE754 doubles (x, y, z, w), Maya CV order",
+    "scope": "12 REVIEW.md default cases and 5 smoothing cases; U1 probes excluded"
+  },
+  "cases": [
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 0,
+          "height": 0.4,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "37ca7026ec75e168c5dde679fddaaa3e3c4b5ef043c5af2b2c6e247f07ee9003"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 0,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "3bf5c54a7da4791706188908343b8f353144c682f2b62b69679e11c1d082f77b"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 0.4,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "a86f77cef9181140eb2eaed3dd937910b795442d8fd0612d98be570238f842ce"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "ef478a361145719c06ce477e0952e3d8a15107b3707cf0b371bd2086aab2037c"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "ef478a361145719c06ce477e0952e3d8a15107b3707cf0b371bd2086aab2037c"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "ef478a361145719c06ce477e0952e3d8a15107b3707cf0b371bd2086aab2037c"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 0,
+          "height": 0.4,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "60d426f7ecff94368e84ccf1915a4154d3507291ec7421e26dc13d9fdb402b54"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 0,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "beee2c5273196438a4389d07caf849ff04813270404ee2ef336e3b038979c469"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 0.4,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "b0ad0b0e999a8ffa34d589837a311282dd25dea741ebd5e4b08f393c1311a678"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "60f728a5775c55c56f549b4d1adcdfd7056b01fae2aeb1e361556e8c98941f4e"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "99c9e90dd84a44dc3562d2642e7cbba74bf3f05b01f1d47cb8202c8fa64c8a7b"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "76da418fdf4b285d759db433c4773646404bc7879fc67936a0e8f18e1cfe1550"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "76da418fdf4b285d759db433c4773646404bc7879fc67936a0e8f18e1cfe1550"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0.5,
+          "follow": 0
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "527138bc2523c6a30a2b34a6f17aa372d930efc7f31669992ec707f993666464"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0.5
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "15bbd8420cbcb44f139d848cce00d8c54d7dfa21e38c616f3d4d48a5ad5eea1f"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0.5,
+          "follow": 0.5
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "ecacc6b53b14688079e0d1363f3e8ad6c9e7ef1cc5dd4d3d3b3ad73ae00e7d9b"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 1,
+          "follow": 1
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "c3600d24faa358ca7a8f115e1c31119958f754bb23b062335cc703bcb23fd905"
+    }
+  ]
+}

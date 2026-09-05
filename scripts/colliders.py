@@ -56,12 +56,12 @@ def _findAxis(startObj, endObj):
     vx = p2[0] - p1[0]
     vy = p2[1] - p1[1]
     vz = p2[2] - p1[2]
-    l = math.sqrt(vx*vx + vy*vy + vz*vz)
-    if l < 1e-5:
+    length = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if length < 1e-5:
         return 1
-    vx /= l
-    vy /= l
-    vz /= l
+    vx /= length
+    vy /= length
+    vz /= length
     
     px = (pwm[0], pwm[1], pwm[2])
     py = (pwm[4], pwm[5], pwm[6])
@@ -163,27 +163,21 @@ def attachJointsToSurface(surface, u_num, v_num, prefix=""):
     joints = []
     
     # Group all attachments under a single transform for neatness
-    grp = cmds.createNode('transform', name=f"{prefix}attachedJoints_group")
-    
-    min_u = cmds.getAttr(f"{surfShape}.minValueU")
-    max_u = cmds.getAttr(f"{surfShape}.maxValueU")
-    min_v = cmds.getAttr(f"{surfShape}.minValueV")
-    max_v = cmds.getAttr(f"{surfShape}.maxValueV")
+    grp = cmds.createNode("transform", name=f"{prefix}attachedJoints_group")
     
     for i in range(u_num):
         # Periodic in U, so [0, 1) to avoid overlap at seam
         u_ratio = i / float(u_num) if u_num > 0 else 0.5
-        u_val = min_u + u_ratio * (max_u - min_u)
         for j in range(v_num):
             # Open in V, so [0, 1] exactly
             v_ratio = j / float(max(1, v_num - 1)) if v_num > 1 else 0.5
-            v_val = min_v + v_ratio * (max_v - min_v)
             
             # PointOnSurfaceInfo
-            posi = cmds.createNode('pointOnSurfaceInfo', name=f"{prefix}skirt_{i}_{j}_posi")
+            posi = cmds.createNode("pointOnSurfaceInfo", name=f"{prefix}skirt_{i}_{j}_posi")
             cmds.connectAttr(f"{surfShape}.worldSpace[0]", f"{posi}.inputSurface", force=True)
-            cmds.setAttr(f"{posi}.parameterU", u_val)
-            cmds.setAttr(f"{posi}.parameterV", v_val)
+            cmds.setAttr(f"{posi}.turnOnPercentage", True)
+            cmds.setAttr(f"{posi}.parameterU", u_ratio)
+            cmds.setAttr(f"{posi}.parameterV", v_ratio)
             
             # Nodes for matrix assembly
             fourByFour = cmds.createNode("fourByFourMatrix", name=f"{prefix}skirt_{i}_{j}_fourByFourMatrix")
@@ -191,7 +185,7 @@ def attachJointsToSurface(surface, u_num, v_num, prefix=""):
             inv = cmds.createNode("multMatrix", name=f"{prefix}skirt_{i}_{j}_multMatrix")
             
             # Transform to hold the joint
-            jntGrp = cmds.createNode('transform', name=f"{prefix}skirt_{i}_{j}_transform", parent=grp)
+            jntGrp = cmds.createNode("transform", name=f"{prefix}skirt_{i}_{j}_transform", parent=grp)
             
             # Feed posi vectors into fourByFourMatrix
             cmds.connectAttr(f"{posi}.positionX", f"{fourByFour}.in30", force=True)
