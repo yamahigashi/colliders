@@ -15,6 +15,14 @@ public:
     static MObject attr_amplitude;
     static MObject attr_amplitudeRamp;
     static MObject attr_idleAmplitude;
+    static MObject attr_idleAmplitudeV;
+    static MObject attr_idleAmplitudeU;
+    static MObject attr_idleDirectionality;
+    static MObject attr_idleDirectionX;
+    static MObject attr_idleDirectionZ;
+    static MObject attr_idleDirectionSpace;
+    static MObject attr_phaseSpread;
+    static MObject attr_impulseAmount;
     static MObject attr_wavePhaseV;
     static MObject attr_wavePhaseU;
     static MObject attr_idleComplexity;

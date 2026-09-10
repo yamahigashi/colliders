@@ -4,7 +4,7 @@ import unittest
 
 import maya.cmds as cmds
 
-import colliders
+import yddColliders
 
 
 class SurfaceAttachmentTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class SurfaceAttachmentTests(unittest.TestCase):
                 obj = cmds.createNode("transform", name=side + part)
                 cmds.setAttr(obj + ".translate", x, y, 0)
                 joints[side + part + "Obj"] = obj
-        node, _, surface = colliders.createSkirtBellCollider(skirtType=skirt_type, **joints)
+        node, _, surface = yddColliders.createSkirtBellCollider(skirtType=skirt_type, **joints)
         return node, surface
 
     def check_attachments(self, surface, joints, u_num, v_num):
@@ -54,7 +54,7 @@ class SurfaceAttachmentTests(unittest.TestCase):
             with self.subTest(skirt_type=skirt_type):
                 cmds.file(new=True, force=True)
                 node, surface = self.create_skirt(skirt_type)
-                joints = colliders.attachJointsToSurface(surface, 3, 3)
+                joints = yddColliders.attachJointsToSurface(surface, 3, 3)
                 self.assertEqual(len(joints), 9)
                 for i in range(3):
                     for j in range(3):
@@ -68,7 +68,7 @@ class SurfaceAttachmentTests(unittest.TestCase):
 
     def test_single_v_stays_at_middle_after_height_changes(self):
         node, surface = self.create_skirt(1)
-        joints = colliders.attachJointsToSurface(surface, 1, 1)
+        joints = yddColliders.attachJointsToSurface(surface, 1, 1)
         self.assertEqual(cmds.getAttr("skirt_0_0_posi.parameterV"), 0.5)
         for height in (1.0, 0.1, 1.0):
             cmds.setAttr(node + ".height", height)
@@ -82,7 +82,7 @@ class PlaneOutputTests(unittest.TestCase):
     def test_parent_and_each_child_can_be_evaluated_first(self):
         for first in (None, 0, 1, 2):
             with self.subTest(first=first):
-                node = cmds.createNode("planeCollider")
+                node = cmds.createNode("yddPlaneCollider")
                 cmds.setAttr(node + ".inputPosition", 1, -2, 3)
                 expected = (1.0, 0.0, 3.0)
                 if first is None:
@@ -95,7 +95,7 @@ class PlaneOutputTests(unittest.TestCase):
                     self.assertEqual(cmds.getAttr(node + ".outputPosition" + str(index)), value)
 
     def test_downstream_child_connections_evaluate_first_and_update(self):
-        node = cmds.createNode("planeCollider")
+        node = cmds.createNode("yddPlaneCollider")
         sink = cmds.createNode("multiplyDivide")
         for index, axis in enumerate("XYZ"):
             cmds.connectAttr(node + ".outputPosition" + str(index), sink + ".input1" + axis)

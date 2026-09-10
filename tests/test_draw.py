@@ -12,8 +12,8 @@ class DrawDependencyTests(unittest.TestCase):
 
     def test_display_controls_do_not_affect_geometry(self):
         for node_type, attributes in (
-            ("bellCollider", ("ringSubdivision", "drawColor", "drawOpacity")),
-            ("skirtBellCollider", ("ringSubdivision",)),
+            ("yddBellCollider", ("ringSubdivision", "drawColor", "drawOpacity")),
+            ("yddSkirtBellCollider", ("ringSubdivision",)),
         ):
             node = cmds.createNode(node_type)
             selection = om.MSelectionList()

@@ -31,11 +31,12 @@
 #include <tbb/parallel_for.h>
 
 #include "bellCollider.h"
+#include "pluginIdentity.h"
 #include "utils.hpp"
 
 using namespace std;
 
-MTypeId BellCollider::typeId(1274434);
+MTypeId BellCollider::typeId(PluginIdentity::kBellTypeId);
 
 MObject BellCollider::attr_bellMatrix;
 MObject BellCollider::attr_ringMatrix;
@@ -49,8 +50,8 @@ MObject BellCollider::attr_drawOpacity;
 MObject BellCollider::attr_outputCurve;
 MObject BellCollider::attr_outputBellMesh;
 
-MString BellCollider::drawDbClassification = "drawdb/geometry/bellCollider";
-MString BellCollider::drawRegistrantId = "collidersPlugin";
+MString BellCollider::drawDbClassification = MString("drawdb/geometry/") + PluginIdentity::kBellNodeName;
+MString BellCollider::drawRegistrantId = PluginIdentity::kDrawRegistrant;
 
 MStatus BellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
 {

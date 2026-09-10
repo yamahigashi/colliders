@@ -32,11 +32,12 @@
 #include <maya/MFnMatrixData.h>
 
 #include "planeCollider.h"
+#include "pluginIdentity.h"
 #include "utils.hpp"
 
 using namespace std;
 
-MTypeId PlaneCollider::typeId(1274435);
+MTypeId PlaneCollider::typeId(PluginIdentity::kPlaneTypeId);
 
 MObject PlaneCollider::attr_planeMatrix;
 MObject PlaneCollider::attr_normalAxis;
@@ -45,8 +46,8 @@ MObject PlaneCollider::attr_drawColor;
 MObject PlaneCollider::attr_drawOpacity;
 MObject PlaneCollider::attr_outputPosition;
 
-MString PlaneCollider::drawDbClassification = "drawdb/geometry/PlaneCollider";
-MString PlaneCollider::drawRegistrantId = "collidersPlugin";
+MString PlaneCollider::drawDbClassification = MString("drawdb/geometry/") + PluginIdentity::kPlaneNodeName;
+MString PlaneCollider::drawRegistrantId = PluginIdentity::kDrawRegistrant;
 
 MStatus PlaneCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 {

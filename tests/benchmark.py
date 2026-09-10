@@ -43,7 +43,7 @@ def run(iterations):
                 cmds.setAttr(node + "." + attr, value)
             rows.append(
                 dict(
-                    node="skirtBellCollider",
+                    node="yddSkirtBellCollider",
                     attributes=attrs,
                     **measure(node, "outputSurface", "height", (0.7, 0.7001), iterations),
                 )
@@ -57,7 +57,7 @@ def run(iterations):
             else:
                 obj = cylinder(size)
                 locator = transform()
-            node = cmds.deformer(obj, type="skirtWaveDeformer")[0]
+            node = cmds.deformer(obj, type="yddSkirtWaveDeformer")[0]
             cmds.connectAttr(locator + ".worldMatrix[0]", node + ".bellMatrix")
             attrs = wave_settings(node, condition)
             import maya.api.OpenMaya as om
@@ -68,7 +68,7 @@ def run(iterations):
                 raise AssertionError(f"Expected {size} points, got {count}")
             rows.append(
                 dict(
-                    node="skirtWaveDeformer",
+                    node="yddSkirtWaveDeformer",
                     points=size,
                     condition=condition,
                     attributes=attrs,
@@ -79,7 +79,7 @@ def run(iterations):
         for condition in ("active", "collision0", "envelope0"):
             cmds.file(new=True, force=True)
             obj = cylinder(size)
-            node = cmds.deformer(obj, type="skirtCollideDeformer")[0]
+            node = cmds.deformer(obj, type="yddSkirtCollideDeformer")[0]
             cmds.setAttr(node + ".ringScale", 0.7, 1, 0.7)
             cmds.setAttr(node + ".falloff", 0.2)
             for side, x in [("left", -1), ("right", 1)]:
@@ -91,7 +91,7 @@ def run(iterations):
                 cmds.setAttr(node + "." + condition[:-1], 0)
             rows.append(
                 dict(
-                    node="skirtCollideDeformer",
+                    node="yddSkirtCollideDeformer",
                     points=size,
                     condition=condition,
                     **measure(node, "outputGeometry[0]", "endFade", (0.1, 0.1001), iterations),

@@ -1,4 +1,4 @@
-global proc AEskirtBellColliderTemplate( string $nodeName )
+global proc AEyddSkirtBellColliderTemplate( string $nodeName )
 {
     editorTemplate -beginScrollLayout;
 

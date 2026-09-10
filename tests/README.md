@@ -1,26 +1,34 @@
-Run these commands from the repository root with Maya's `mayapy` executable. Use an absolute plugin path to select the binary under test. You can set `COLLIDERS_PLUGIN_PATH` instead of passing `--plugin`.
+Run these commands from the repository root with Maya's `mayapy` executable. Use an absolute plugin path to select the binary under test. You can set `YDD_COLLIDERS_PLUGIN_PATH` instead of passing `--plugin`.
 
 ```powershell
 $mayapy = 'C:\Program Files\Autodesk\Maya2026\bin\mayapy.exe'
-& $mayapy -B tests/run_maya_tests.py --plugin C:\build\colliders.mll
-& $mayapy -B tests/run_maya_tests.py --plugin C:\build\colliders.mll --pattern test_solver.py
-& $mayapy -B tests/benchmark.py --plugin C:\build\colliders.mll --output candidate-timing.json
+& $mayapy -B tests/run_maya_tests.py --plugin C:\build\yddColliders.mll
+& $mayapy -B tests/run_maya_tests.py --plugin C:\build\yddColliders.mll --pattern test_solver.py
+& $mayapy -B tests/benchmark.py --plugin C:\build\yddColliders.mll --output candidate-timing.json
 ```
 
 The runner uses standard-library `unittest`, skips Python user setup, adds this checkout's `scripts` directory to `sys.path`, and closes Maya in a `finally` block. A failed test, load error, or empty discovery returns a nonzero exit status. Run each binary in a separate process.
 
-For output comparisons, capture both binaries with the same checkout and Maya version:
+Current capture tools create only `ydd` node types. For comparisons between
+two current binaries, capture both with this checkout and the same Maya
+version:
 
 ```powershell
-& $mayapy -B tests/compare_outputs.py capture --plugin C:\baseline\colliders.mll --output baseline.json
-& $mayapy -B tests/compare_outputs.py capture --plugin C:\build\colliders.mll --output candidate.json
+& $mayapy -B tests/compare_outputs.py capture --plugin C:\baseline\yddColliders.mll --output baseline.json
+& $mayapy -B tests/compare_outputs.py capture --plugin C:\build\yddColliders.mll --output candidate.json
 python tests/compare_outputs.py compare baseline.json candidate.json --output comparison.json
 ```
 
-You can run both captures through one command:
+For a pre-identity baseline, run `capture` from the matching archived old
+checkout with its old `colliders.mll`, then capture the candidate with this
+checkout and `yddColliders.mll`. Compare the two JSON files with the current
+`compare` command. The current capture code has no old-name fallback. Keep
+historical result files and their recorded plugin names unchanged.
+
+You can run two current-identity captures through one command:
 
 ```powershell
-python tests/compare_outputs.py pair --mayapy $mayapy --baseline-plugin C:\baseline\colliders.mll --candidate-plugin C:\build\colliders.mll --output-dir comparison
+python tests/compare_outputs.py pair --mayapy $mayapy --baseline-plugin C:\baseline\yddColliders.mll --candidate-plugin C:\build\yddColliders.mll --output-dir comparison
 ```
 
 Use native Windows Python for `pair` with Windows mayapy so both processes understand the same paths. The `compare` command needs no Maya installation. Its default tolerance is zero; use `--tolerance` to set an absolute coordinate tolerance. The report includes bitwise equality and the largest absolute component difference for each case. A comparison outside tolerance returns exit status 1, including known fixes; inspect those differences instead of treating legacy results as expected behavior.
@@ -53,10 +61,38 @@ import viewport_smoke
 
 maya.utils.executeDeferred(
     lambda: viewport_smoke.main(
-        r"C:\build\colliders.mll",
+        r"C:\build\yddColliders.mll",
         r"C:\validation\viewport",
     )
 )
 ```
 
 Inspect `result.json` and the PNG files in the output directory. Require `passed: true`, an empty `errors` list, and all pixel checks to pass. Check the images for Bell and Skirt drawing, including the asymmetric legs. The test compares raw pixel hashes after same-frame edits and restoration, visibility changes, camera changes, and a time round trip. It also checks for colored drawing before hiding the colliders and its absence afterward. You must assess Cached Playback and playback FPS in separate tests. Close the dedicated Maya process after reviewing the results; `main()` leaves it open.
+
+
+`test_registration.py` checks the plugin vendor/version and an independent
+list of five node names, IDs, API kinds, and locator draw classifications.
+It also checks the public Python module and prefixed custom node names.
+The identity contract is [ADR-0003](../docs/adr/0003-ydd-plugin-identity.md).
+
+For a real mGear component build, supply the mGear release directory and
+the component repository root:
+
+```powershell
+& $mayapy -B tests/integration/check_wave_component.py --plugin C:\build\yddColliders.mll --mgear-release C:\mgear\release --components-root C:\mgear_shifter_components
+```
+
+The integration check builds three wave/post-collision configurations and
+checks the host attributes, connections, deformer order, initial zero wave,
+and active surface deformation. Its JSON includes source and plugin hashes.
+The component and guide must both report version 3.0.0.
+
+
+Add `--upstream-plugin C:\upstream\colliders.mll` to test consumer autoload
+and coexistence. The CLI adds the candidate directory to the plugin search
+path before initializing Maya, unloads the initial candidate in an empty
+scene without forcing, and loads upstream alone. It invokes the real
+component plugin guard and checks both loaded paths and registered node
+sets. It then builds all three rig configurations with both plugins loaded.
+The JSON records the autoload check, both binary hashes, and coexistence
+checks after each rig build.

@@ -61,7 +61,7 @@ def capture(plugin):
                     cmds.evaluationManager(mode=mode)
                     obj = cmds.polyCylinder(radius=1, height=4, subdivisionsX=12, subdivisionsY=4, constructionHistory=False)[0]
                     cmds.move(0, 2, 0, obj + ".vtx[*]", relative=True, objectSpace=True)
-                    node = cmds.deformer(obj, type="skirtWaveDeformer")[0]
+                    node = cmds.deformer(obj, type="yddSkirtWaveDeformer")[0]
                     attrs = wave_settings(node, condition)
                     attrs["idleComplexity"] = complexity
                     cmds.setAttr(node + ".idleComplexity", complexity)
@@ -88,7 +88,7 @@ def capture(plugin):
             cmds.file(new=True, force=True)
             mesh = om.MFnMesh().create([om.MPoint(1, y, z) for y, z in [(1, 0), (2, 0), (4, 0.1)]], [3], [0, 1, 2])
             shape = om.MFnDagNode(mesh).fullPathName()
-            node = cmds.deformer(shape, type="skirtWaveDeformer")[0]
+            node = cmds.deformer(shape, type="yddSkirtWaveDeformer")[0]
             attrs = wave_settings(node, "periodic_only")
             cmds.setAttr(node + ".waveCountU", 0)
             cmds.setAttr(node + ".waveCountV", 0)
@@ -100,7 +100,7 @@ def capture(plugin):
         for scale in ((0.4, 1.5, 0.4), (2, 1.5, 2)):
             for y in (0, 10):
                 cmds.file(new=True, force=True)
-                node = cmds.createNode("bellCollider")
+                node = cmds.createNode("yddBellCollider")
                 bell = transform((0, y, 0))
                 ring = transform((0, y, 0), (0, 0, 45), scale)
                 cmds.connectAttr(bell + ".worldMatrix[0]", node + ".bellMatrix")

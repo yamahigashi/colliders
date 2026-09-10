@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
 
-project (colliders) 
+project (yddColliders)
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
 find_package( Maya REQUIRED )
 
 set(sources
+  sources/pluginIdentity.h
   sources/main.cpp 
   sources/bellCollider.cpp
   sources/bellCollider.h
@@ -23,10 +24,10 @@ set(sources
   sources/skirtWaveDeformer.h
   sources/utils.hpp)
 
-add_library(colliders SHARED ${sources})
+add_library(yddColliders SHARED ${sources})
 
-MAYA_PLUGIN( colliders )
-install(TARGETS colliders
+MAYA_PLUGIN( yddColliders )
+install(TARGETS yddColliders
         RUNTIME DESTINATION modules
         LIBRARY DESTINATION modules
         ARCHIVE DESTINATION modules)

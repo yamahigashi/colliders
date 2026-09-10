@@ -12,14 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def add_plugin_argument(parser):
     parser.add_argument(
-        "--plugin", default=os.environ.get("COLLIDERS_PLUGIN_PATH"), help="Absolute plugin path (or COLLIDERS_PLUGIN_PATH)"
+        "--plugin",
+        default=os.environ.get("YDD_COLLIDERS_PLUGIN_PATH"),
+        help="Absolute plugin path (or YDD_COLLIDERS_PLUGIN_PATH)",
     )
 
 
 @contextmanager
 def maya_session(plugin):
     if not plugin:
-        raise ValueError("Specify --plugin or COLLIDERS_PLUGIN_PATH")
+        raise ValueError("Specify --plugin or YDD_COLLIDERS_PLUGIN_PATH")
     plugin = Path(plugin).resolve(strict=True)
     os.environ["MAYA_SKIP_USERSETUP_PY"] = "1"
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -51,7 +53,7 @@ def transform(position=(0, 0, 0), rotation=(0, 0, 0), scale=(1, 1, 1)):
 
 
 def skirt(bent=False):
-    import colliders
+    import yddColliders
 
     positions = [
         (-1, 10, 0),
@@ -62,7 +64,7 @@ def skirt(bent=False):
         (1, 0, 0),
     ]
     joints = [transform(p) for p in positions]
-    return colliders.createSkirtBellCollider(
+    return yddColliders.createSkirtBellCollider(
         leftHipObj=joints[0],
         leftKneeObj=joints[1],
         leftHeelObj=joints[2],

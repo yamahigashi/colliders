@@ -40,8 +40,8 @@ def main(plugin_path, output_dir):
         cmds.displayRGBColor("backgroundBottom", 0.08, 0.08, 0.08)
         cmds.displayPref(displayGradient=False)
 
-        bell = cmds.createNode("bellCollider", name="smokeBellShape")
-        skirt = cmds.createNode("skirtBellCollider", name="smokeSkirtShape")
+        bell = cmds.createNode("yddBellCollider", name="smokeBellShape")
+        skirt = cmds.createNode("yddSkirtBellCollider", name="smokeSkirtShape")
         cmds.setAttr(bell + ".bellMatrix", *_matrix((-3, -1, 0), (1.5, 3, 1.5)), type="matrix")
         cmds.setAttr(bell + ".ringMatrix[0]", *_matrix((-2.5, -1, 0), (0.7, 3, 0.7)), type="matrix")
         cmds.setAttr(bell + ".drawColor", 0.1, 0.8, 1, type="double3")

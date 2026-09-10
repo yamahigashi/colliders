@@ -32,7 +32,7 @@ def _matrix(translation=(0, 0, 0), rotation=(0, 0, 45), radius=0.4):
 
 
 def _bell(indices, matrices, translation=(0, 0, 0), collision=0):
-    node = cmds.createNode("bellCollider")
+    node = cmds.createNode("yddBellCollider")
     matrix = om.MTransformationMatrix()
     matrix.setTranslation(om.MVector(*translation), om.MSpace.kTransform)
     cmds.setAttr(node + ".bellMatrix", *list(matrix.asMatrix()), type="matrix")

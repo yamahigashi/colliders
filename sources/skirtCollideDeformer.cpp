@@ -12,9 +12,10 @@
 #include <vector>
 
 #include "skirtCollideDeformer.h"
+#include "pluginIdentity.h"
 #include "utils.hpp"
 
-MTypeId SkirtCollideDeformer::typeId(1274437);
+MTypeId SkirtCollideDeformer::typeId(PluginIdentity::kSkirtCollideTypeId);
 
 MObject SkirtCollideDeformer::attr_bellMatrix;
 MObject SkirtCollideDeformer::attr_leftHipMatrix;

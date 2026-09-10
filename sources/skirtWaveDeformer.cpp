@@ -17,14 +17,23 @@
 #include <vector>
 
 #include "skirtWaveDeformer.h"
+#include "pluginIdentity.h"
 #include "utils.hpp"
 
-MTypeId SkirtWaveDeformer::typeId(1274438);
+MTypeId SkirtWaveDeformer::typeId(PluginIdentity::kSkirtWaveTypeId);
 
 MObject SkirtWaveDeformer::attr_bellMatrix;
 MObject SkirtWaveDeformer::attr_amplitude;
 MObject SkirtWaveDeformer::attr_amplitudeRamp;
 MObject SkirtWaveDeformer::attr_idleAmplitude;
+MObject SkirtWaveDeformer::attr_idleAmplitudeV;
+MObject SkirtWaveDeformer::attr_idleAmplitudeU;
+MObject SkirtWaveDeformer::attr_idleDirectionality;
+MObject SkirtWaveDeformer::attr_idleDirectionX;
+MObject SkirtWaveDeformer::attr_idleDirectionZ;
+MObject SkirtWaveDeformer::attr_idleDirectionSpace;
+MObject SkirtWaveDeformer::attr_phaseSpread;
+MObject SkirtWaveDeformer::attr_impulseAmount;
 MObject SkirtWaveDeformer::attr_wavePhaseV;
 MObject SkirtWaveDeformer::attr_wavePhaseU;
 MObject SkirtWaveDeformer::attr_idleComplexity;
@@ -164,7 +173,7 @@ void SkirtWaveDeformer::postConstructor()
     MRampAttribute ramp(thisMObject(), attr_amplitudeRamp, &stat);
     if (!stat)
     {
-        MGlobal::displayError("skirtWaveDeformer: failed to initialize amplitudeRamp.");
+        MGlobal::displayError(MString(PluginIdentity::kSkirtWaveNodeName) + ": failed to initialize amplitudeRamp.");
         return;
     }
 
@@ -194,7 +203,7 @@ void SkirtWaveDeformer::postConstructor()
 
     ramp.addEntries(positions, values, interpolations, &stat);
     if (!stat)
-        MGlobal::displayError("skirtWaveDeformer: failed to add amplitudeRamp defaults.");
+        MGlobal::displayError(MString(PluginIdentity::kSkirtWaveNodeName) + ": failed to add amplitudeRamp defaults.");
 }
 
 MStatus SkirtWaveDeformer::initialize()
@@ -228,6 +237,71 @@ MStatus SkirtWaveDeformer::initialize()
     nAttr.setMin(0.0);
     nAttr.setKeyable(true);
     stat = addAttribute(attr_idleAmplitude);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_idleAmplitudeV = nAttr.create("idleAmplitudeV", "idleAmplitudeV", MFnNumericData::kDouble, 1.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setMin(0.0);
+    nAttr.setSoftMax(2.0);
+    nAttr.setKeyable(true);
+    stat = addAttribute(attr_idleAmplitudeV);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_idleAmplitudeU = nAttr.create("idleAmplitudeU", "idleAmplitudeU", MFnNumericData::kDouble, 1.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setMin(0.0);
+    nAttr.setSoftMax(2.0);
+    nAttr.setKeyable(true);
+    stat = addAttribute(attr_idleAmplitudeU);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_idleDirectionality = nAttr.create("idleDirectionality", "idleDirectionality", MFnNumericData::kDouble, 0.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setMin(0.0);
+    nAttr.setMax(1.0);
+    nAttr.setKeyable(true);
+    stat = addAttribute(attr_idleDirectionality);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_idleDirectionX = nAttr.create("idleDirectionX", "idleDirectionX", MFnNumericData::kDouble, -1.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setSoftMin(-1.0);
+    nAttr.setSoftMax(1.0);
+    nAttr.setKeyable(true);
+    stat = addAttribute(attr_idleDirectionX);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_idleDirectionZ = nAttr.create("idleDirectionZ", "idleDirectionZ", MFnNumericData::kDouble, 0.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setSoftMin(-1.0);
+    nAttr.setSoftMax(1.0);
+    nAttr.setKeyable(true);
+    stat = addAttribute(attr_idleDirectionZ);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_phaseSpread = nAttr.create("phaseSpread", "phaseSpread", MFnNumericData::kDouble, 0.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setMin(0.0);
+    nAttr.setSoftMax(0.5);
+    nAttr.setKeyable(true);
+    stat = addAttribute(attr_phaseSpread);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_impulseAmount = nAttr.create("impulseAmount", "impulseAmount", MFnNumericData::kDouble, 1.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setMin(0.0);
+    nAttr.setSoftMax(2.0);
+    nAttr.setKeyable(true);
+    stat = addAttribute(attr_impulseAmount);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_idleDirectionSpace = eAttr.create("idleDirectionSpace", "idleDirectionSpace", 0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    eAttr.addField("World", 0);
+    eAttr.addField("Bell Local", 1);
+    eAttr.setKeyable(false);
+    eAttr.setChannelBox(true);
+    stat = addAttribute(attr_idleDirectionSpace);
     CHECK_MSTATUS_AND_RETURN_IT(stat);
 
     attr_wavePhaseV = nAttr.create("wavePhaseV", "wavePhaseV", MFnNumericData::kDouble, 0.0, &stat);
@@ -381,6 +455,14 @@ MStatus SkirtWaveDeformer::initialize()
         attr_amplitude,
         attr_amplitudeRamp,
         attr_idleAmplitude,
+        attr_idleAmplitudeV,
+        attr_idleAmplitudeU,
+        attr_idleDirectionality,
+        attr_idleDirectionX,
+        attr_idleDirectionZ,
+        attr_idleDirectionSpace,
+        attr_phaseSpread,
+        attr_impulseAmount,
         attr_wavePhaseV,
         attr_wavePhaseU,
         attr_idleComplexity,
@@ -417,6 +499,22 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     const double amplitude = dataBlock.inputValue(attr_amplitude, &stat).asDouble();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
     const double idleAmplitude = dataBlock.inputValue(attr_idleAmplitude, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double idleAmplitudeV = dataBlock.inputValue(attr_idleAmplitudeV, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double idleAmplitudeU = dataBlock.inputValue(attr_idleAmplitudeU, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double idleDirectionality = dataBlock.inputValue(attr_idleDirectionality, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double idleDirectionX = dataBlock.inputValue(attr_idleDirectionX, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double idleDirectionZ = dataBlock.inputValue(attr_idleDirectionZ, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const short idleDirectionSpace = dataBlock.inputValue(attr_idleDirectionSpace, &stat).asShort();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double phaseSpread = dataBlock.inputValue(attr_phaseSpread, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double impulseAmount = dataBlock.inputValue(attr_impulseAmount, &stat).asDouble();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
     const double wavePhaseV = dataBlock.inputValue(attr_wavePhaseV, &stat).asDouble();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
@@ -469,7 +567,7 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         if (!bellMatrixWarningIssued)
         {
             MFnDependencyNode nodeFn(thisMObject());
-            MGlobal::displayWarning(MString("skirtWaveDeformer ") + nodeFn.name()
+            MGlobal::displayWarning(MString(PluginIdentity::kSkirtWaveNodeName) + " " + nodeFn.name()
                 + ": degenerate bellMatrix; passing geometry through unchanged.");
             bellMatrixWarningIssued = true;
         }
@@ -485,14 +583,30 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     // World (default): X/Z are global axes, projected off the cone axis so the
     // keyed direction matches viewport intuition. Bell Local: the waist frame.
     const bool impulseUseWorld = (impulseSpace == 0);
-    MVector impulseVector(impulseX, 0.0, impulseZ);
-    if (impulseUseWorld)
-        impulseVector -= bellAxis * (impulseVector * bellAxis);
+    MVector impulseVector(0.0, 0.0, 0.0);
+    if (impulseAmount != 0.0)
+    {
+        impulseVector = MVector(impulseX, 0.0, impulseZ);
+        if (impulseUseWorld)
+            impulseVector -= bellAxis * (impulseVector * bellAxis);
+    }
     const double impulseLength = impulseVector.length();
 
     if (idleAmplitude == 0.0 && impulseLength < kImpulseTolerance
         && noiseAmplitude < kImpulseTolerance)
         return MS::kSuccess;
+
+    const bool idleUseWorld = (idleDirectionSpace == 0);
+    MVector idleDirection(idleDirectionX, 0.0, idleDirectionZ);
+    const double idleDirectionLength = std::hypot(idleDirectionX, idleDirectionZ);
+    if (idleDirectionLength < kImpulseTolerance)
+        idleDirection = MVector(0.0, 0.0, 0.0);
+    else
+    {
+        idleDirection /= idleDirectionLength;
+        if (idleUseWorld)
+            idleDirection -= bellAxis * (idleDirection * bellAxis);
+    }
 
     std::vector<WavePoint> points;
     double maximumHeight = -kMinimumHemHeight;
@@ -557,29 +671,43 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         double idleWave = 0.0;
         if (idleAmplitude != 0.0)
         {
+            const double directionDot = idleUseWorld
+                ? radialWorld * idleDirection : radialLocal * idleDirection;
+            const double verticalGain = idleAmplitudeV
+                * ((1.0 - idleDirectionality) + idleDirectionality * directionDot);
+            double localPhaseV = wavePhaseV;
+            if (phaseSpread != 0.0 && verticalGain != 0.0)
+                localPhaseV += phaseSpread * valueNoise(
+                    std::cos(theta) * noiseFrequencyU + 7.31,
+                    std::sin(theta) * noiseFrequencyU + 3.17,
+                    noisePhase);
+            const auto combineWaves = [&](double phaseV, double phaseU)
+            {
+                const double vertical = verticalGain == 0.0
+                    ? 0.0 : verticalGain * shapedSine(phaseV, skew, sharpness);
+                if (waveCountU == 0)
+                    return vertical;
+                const double around = idleAmplitudeU == 0.0
+                    ? 0.0 : idleAmplitudeU * shapedSine(phaseU, skew, sharpness);
+                return 0.5 * (vertical + around);
+            };
             double basePrimary = 0.0;
             if (idleComplexity != 1.0)
             {
-                const double phiV = 2.0 * kPi * (wavePhaseV - waveCountV * v);
+                const double phiV = 2.0 * kPi * (localPhaseV - waveCountV * v);
                 const double phiU = waveCountU * (theta - 2.0 * kPi * wavePhaseU);
-                basePrimary = waveCountU > 0
-                    ? 0.5 * (shapedSine(phiV, skew, sharpness)
-                        + shapedSine(phiU, skew, sharpness))
-                    : shapedSine(phiV, skew, sharpness);
+                basePrimary = combineWaves(phiV, phiU);
             }
             double baseSecondary = 0.0;
             if (idleComplexity != 0.0)
             {
                 const double phiV2 = 2.0 * kPi
-                    * (goldenRatio * wavePhaseV - waveCountV * v)
+                    * (goldenRatio * localPhaseV - waveCountV * v)
                     + 0.5 * kPi;
                 const double phiU2 = waveCountU
                     * (theta - 2.0 * kPi * goldenRatio * wavePhaseU)
                     + 0.5 * kPi;
-                baseSecondary = waveCountU > 0
-                    ? 0.5 * (shapedSine(phiV2, skew, sharpness)
-                        + shapedSine(phiU2, skew, sharpness))
-                    : shapedSine(phiV2, skew, sharpness);
+                baseSecondary = combineWaves(phiV2, phiU2);
             }
             idleWave = idleAmplitude
                 * ((1.0 - idleComplexity) * basePrimary
@@ -589,9 +717,9 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         const double impulseDot = impulseUseWorld
             ? (radialWorld * impulseVector)
             : (radialLocal * impulseVector);
-        const double impulseWave = impulseLength < kImpulseTolerance
+        const double impulseWave = impulseAmount == 0.0 || impulseLength < kImpulseTolerance
             ? 0.0
-            : impulseKernel(v, impulsePosition, impulseWidth)
+            : impulseAmount * impulseKernel(v, impulsePosition, impulseWidth)
                 * ((1.0 - directionality) * impulseLength
                     + directionality * impulseDot);
 

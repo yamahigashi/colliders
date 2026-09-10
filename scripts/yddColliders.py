@@ -1,11 +1,11 @@
 import math
 import maya.cmds as cmds
 
-WINDOW_ID = "bellColliderUI"
+WINDOW_ID = "yddBellColliderUI"
 WINDOW_TITLE = "Bell Collider Creator"
 
-BELL_NODE_TYPE = "bellCollider"
-SKIRT_NODE_TYPE = "skirtBellCollider"
+BELL_NODE_TYPE = "yddBellCollider"
+SKIRT_NODE_TYPE = "yddSkirtBellCollider"
 
 
 # ---------------------------------------------------------------------------
@@ -15,7 +15,7 @@ SKIRT_NODE_TYPE = "skirtBellCollider"
 def createBellCollider(numRings=1, prefix=""):
     """
     Auto-create a bell locator + numRings ring locators, wire them
-    into a new bellCollider node. All parameters use node defaults.
+    into a new yddBellCollider node. All parameters use node defaults.
     """
     bellLoc = cmds.spaceLocator(name=f"{prefix}skirt_bell_locator")[0]
 
@@ -25,14 +25,14 @@ def createBellCollider(numRings=1, prefix=""):
         cmds.setAttr(loc + ".s", 0.4, 1.5, 0.4)
         ringLocs.append(loc)
 
-    node = cmds.createNode(BELL_NODE_TYPE, name=f"{prefix}bellCollider")
+    node = cmds.createNode(BELL_NODE_TYPE, name=f"{prefix}yddBellCollider")
     nodeXform = cmds.listRelatives(node, parent=True, type="transform")[0]
-    cmds.rename(nodeXform, f"{prefix}bellCollider_transform")
+    cmds.rename(nodeXform, f"{prefix}yddBellCollider_transform")
     cmds.connectAttr(f"{bellLoc}.worldMatrix[0]", f"{node}.bellMatrix", force=True)
     for idx, rl in enumerate(ringLocs):
         cmds.connectAttr(f"{rl}.worldMatrix[0]", f"{node}.ringMatrix[{idx}]", force=True)
 
-    # Lock t/r/s on the bellCollider's parent transform
+    # Lock t/r/s on the yddBellCollider's parent transform
     nodeXform = cmds.listRelatives(node, parent=True)[0]
     for attr in ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz"):
         cmds.setAttr(f"{nodeXform}.{attr}", lock=True)
@@ -105,9 +105,9 @@ def createSkirtBellCollider(
     if waistObj:
         cmds.parentConstraint(waistObj, bellLoc, maintainOffset=True)
 
-    node = cmds.createNode(SKIRT_NODE_TYPE, name=f"{prefix}skirtBellCollider")
+    node = cmds.createNode(SKIRT_NODE_TYPE, name=f"{prefix}yddSkirtBellCollider")
     nodeXform = cmds.listRelatives(node, parent=True, type="transform")[0]
-    cmds.rename(nodeXform, f"{prefix}skirtBellCollider_transform")
+    cmds.rename(nodeXform, f"{prefix}yddSkirtBellCollider_transform")
 
     cmds.setAttr(f"{node}.skirtType", skirtType)
     cmds.setAttr(f"{node}.bellScale", dist, 1.0, dist, type="double3")
@@ -130,7 +130,7 @@ def createSkirtBellCollider(
         if obj:
             cmds.connectAttr(f"{obj}.worldMatrix[0]", f"{node}.{attr}", force=True)
 
-    # Lock t/r/s on the skirtBellCollider's parent transform
+    # Lock t/r/s on the yddSkirtBellCollider's parent transform
     nodeXform = cmds.listRelatives(node, parent=True)[0]
     for attr in ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz"):
         cmds.setAttr(f"{nodeXform}.{attr}", lock=True)

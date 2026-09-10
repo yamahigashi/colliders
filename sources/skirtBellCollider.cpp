@@ -21,6 +21,7 @@
 #include <cmath>
 
 #include "skirtBellCollider.h"
+#include "pluginIdentity.h"
 #include "bellColliderSolver.h"
 #include "utils.hpp"
 #include "skirtRingFrames.h"
@@ -31,11 +32,11 @@ using namespace std;
 #define M_PI 3.14159265358979323846
 #endif
 
-MTypeId SkirtBellCollider::typeId(1274436);
-MString SkirtBellCollider::typeName("skirtBellCollider");
+MTypeId SkirtBellCollider::typeId(PluginIdentity::kSkirtBellTypeId);
+MString SkirtBellCollider::typeName(PluginIdentity::kSkirtBellNodeName);
 
-MString SkirtBellCollider::drawDbClassification = "drawdb/geometry/skirtBellCollider";
-MString SkirtBellCollider::drawRegistrantId = "collidersPlugin";
+MString SkirtBellCollider::drawDbClassification = MString("drawdb/geometry/") + PluginIdentity::kSkirtBellNodeName;
+MString SkirtBellCollider::drawRegistrantId = PluginIdentity::kDrawRegistrant;
 
 MObject SkirtBellCollider::attr_bellMatrix;
 MObject SkirtBellCollider::attr_leftHipMatrix;
