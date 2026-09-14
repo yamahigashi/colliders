@@ -122,3 +122,123 @@ class BellSolverTests(unittest.TestCase):
         empty = _bell([], [])
         for attribute in ("outputBellMesh", "outputCurve"):
             self.assertPointsClose(_points(empty, attribute), _points(sparse, attribute), 0)
+
+
+class SkirtLegProfileSolverTests(unittest.TestCase):
+    def setUp(self):
+        cmds.file(new=True, force=True)
+
+    def skirt(self, bent=False):
+        from test_deformers import matrix
+
+        node = cmds.createNode("yddSkirtBellCollider")
+        for side in ("left", "right"):
+            for joint, y in (("Hip", 0), ("Knee", 2), ("Heel", 4)):
+                cmds.setAttr(node + "." + side + joint + "Matrix", *matrix(0, y, y if bent else 0), type="matrix")
+            cmds.setAttr(node + "." + side + "RingAxis", 1)
+        cmds.setAttr(node + ".bellMatrix", *matrix(0, 0 if bent else -2, 0), type="matrix")
+        cmds.setAttr(node + ".ringScale", 1, 1, 1, type="double3")
+        cmds.setAttr(node + ".bellScale", 2 if bent else 0.1, 1, 2 if bent else 0.1, type="double3")
+        for name, value in dict(skirtType=0, height=1, tightness=1, follow=0, collision=1, bellAxis=1).items():
+            cmds.setAttr(node + "." + name, value)
+        return node
+
+    def surface_rows(self, node):
+        from helpers import output_object
+
+        # The data object must stay referenced while the function set reads it.
+        surface = output_object(node, "outputSurface")
+        fn = om.MFnNurbsSurface(surface)
+        points = fn.cvPositions()
+        return [[tuple(points[u * fn.numCVsInV + v])[:3] for u in range(fn.numCVsInU - 3)] for v in range(fn.numCVsInV)]
+
+    def test_knee_profile_shrinks_row_with_and_without_follow(self):
+        for follow in (0, 0.5):
+            with self.subTest(follow=follow):
+                node = self.skirt(bent=True)
+                cmds.setAttr(node + ".follow", follow)
+                baseline = self.surface_rows(node)
+                for axis in ("X", "Z"):
+                    cmds.setAttr(node + ".kneeRadius" + axis, 0.7)
+                rows = self.surface_rows(node)
+                front = max(range(len(rows[0])), key=lambda i: rows[0][i][2])
+
+                def leg_radius(point):
+                    return math.hypot(point[0], (point[2] - point[1]) / math.sqrt(2))
+
+                self.assertEqual(rows[0], baseline[0])
+                self.assertLess(leg_radius(rows[2][front]), leg_radius(rows[0][front]))
+                self.assertLess(leg_radius(rows[2][front]), leg_radius(baseline[2][front]))
+                self.assertTrue(all(math.isfinite(value) for row in rows for point in row for value in point))
+
+    def test_collision_rotation_moves_line_point_toward_hip(self):
+        radii = []
+        for radius in (1, 0.7):
+            node = _bell([0], [_matrix(rotation=(0, 0, 45), radius=radius)], collision=0)
+            point = min(_points(node, "outputCurve"), key=lambda p: p[0])
+            projected_radius = abs((point[0] + point[1]) / math.sqrt(2))
+            self.assertAlmostEqual(projected_radius, radius, delta=0.002)
+            radii.append(projected_radius)
+        self.assertLess(radii[1], radii[0])
+
+    def test_both_nodes_agree_at_profile_stations(self):
+        from test_deformers import DeformerTests, matrix
+
+        fixture = DeformerTests()
+        values = dict(
+            thighRadiusX=1.2,
+            thighRadiusZ=0.8,
+            kneeRadiusX=0.5,
+            kneeRadiusZ=0.4,
+            calfRadiusX=0.9,
+            calfRadiusZ=0.7,
+            ankleRadiusX=0.8,
+            ankleRadiusZ=0.6,
+        )
+        for station, height, row, x_radius, z_radius in (
+            ("thigh", 0.5, 1, 1.2, 0.8),
+            ("knee", 0.5, 2, 0.5, 0.4),
+            ("calf", 0.5, 3, 0.9, 0.7),
+            ("ankle", 1, 3, 0.8, 0.6),
+        ):
+            with self.subTest(station=station):
+                node = self.skirt()
+                cmds.setAttr(node + ".skirtType", 1)
+                cmds.setAttr(node + ".height", height)
+                cmds.setAttr(node + ".ringScale", 1.3, 1, 0.9, type="double3")
+                fixture.set_profile(node, **values)
+                surface_row = self.surface_rows(node)[row]
+                y = dict(thigh=1, knee=2, calf=3, ankle=4)[station]
+                mesh = fixture.mesh([(0.05, y, 0), (0, y, 0.05), (0.05, y, 0.05)])
+                deformer = fixture.collision(mesh, long=station in ("calf", "ankle"))
+                for side in ("left", "right"):
+                    for joint, joint_y in (("Hip", 0), ("Knee", 2), ("Heel", 4)):
+                        cmds.setAttr(deformer + "." + side + joint + "Matrix", *matrix(0, joint_y), type="matrix")
+                cmds.setAttr(deformer + ".ringScale", 1.3, 1, 0.9, type="double3")
+                fixture.set_profile(deformer, **values)
+                points = fixture.points(mesh)
+                self.assertAlmostEqual(points[0][0], 0.9 * z_radius, delta=2e-6)
+                self.assertAlmostEqual(points[1][2], 1.3 * x_radius, delta=2e-6)
+                self.assertAlmostEqual(max(p[0] for p in surface_row), points[0][0], delta=2e-6)
+                self.assertAlmostEqual(max(p[2] for p in surface_row), points[1][2], delta=2e-6)
+
+    def test_rows_above_hip_ignore_profile_and_follow_uses_row_profile(self):
+        node = self.skirt()
+        # At the minimum height the hem level sits just below the hip, so the waist
+        # and mid rows are above the hip and must ignore the profile; only the hem
+        # row may move.
+        cmds.setAttr(node + ".height", 0.01)
+        baseline = self.surface_rows(node)
+        for station in ("thigh", "knee", "calf", "ankle"):
+            for axis in ("X", "Z"):
+                cmds.setAttr(node + "." + station + "Radius" + axis, 1.7)
+        scaled = self.surface_rows(node)
+        self.assertEqual(scaled[:2], baseline[:2])
+        self.assertTrue(all(math.isfinite(value) for row in scaled for point in row for value in point))
+        cmds.setAttr(node + ".height", 1)
+        cmds.setAttr(node + ".follow", 0.5)
+        for axis in ("X", "Z"):
+            cmds.setAttr(node + ".kneeRadius" + axis, 0.7)
+        rows = self.surface_rows(node)
+        self.assertAlmostEqual(max(p[0] for p in rows[1]), 1.7, delta=2e-6)
+        self.assertAlmostEqual(max(p[0] for p in rows[2]), 0.7, delta=2e-6)

@@ -9,7 +9,9 @@
 #include <cmath>
 
 #include "bellColliderSolver.h"
+#include "colliderInputValidation.h"
 #include "utils.hpp"
+#include "bellColliderRelaxKernel.h"
 
 using namespace std;
 
@@ -23,20 +25,42 @@ void BellColliderSolver::roundMeshPoints(MPointArray &points)
             i);
 }
 
-MPointArray BellColliderSolver::makeBellPoints(const MMatrix &matrix, unsigned int axis, unsigned int numSides,
+BellCircleTable::BellCircleTable(int numSides)
+{
+    if (!ColliderInput::validSubdivision(numSides))
+        return;
+    cosines.reserve(numSides);
+    sines.reserve(numSides);
+    for (int i = 0; i < numSides; ++i)
+    {
+        const double rad = (double)i / numSides * 2 * M_PI;
+        cosines.push_back(cos(rad));
+        sines.push_back(sin(rad));
+    }
+}
+
+MPointArray BellColliderSolver::makeBellPoints(const MMatrix &matrix, unsigned int axis, int numSides,
+                                               double height, double bottomRadius, double topRadius)
+{
+    return makeBellPoints(matrix, axis, BellCircleTable(numSides), height, bottomRadius, topRadius);
+}
+
+MPointArray BellColliderSolver::makeBellPoints(const MMatrix &matrix, unsigned int axis, const BellCircleTable &circle,
                                                double height, double bottomRadius, double topRadius)
 {
     MPointArray points;
+    if (!circle.valid() || axis > 2)
+        return points;
+    const int numSides = circle.numSides();
     points.append(MPoint(0, 0, 0) * matrix);
     for (int row = 0; row < 2; ++row)
     {
         const double radius = row == 0 ? bottomRadius : topRadius;
         const double offset = row == 0 ? 0.0 : height;
-        for (unsigned int i = 0; i < numSides; ++i)
+        for (int i = 0; i < numSides; ++i)
         {
-            const double rad = (double)i / numSides * 2 * M_PI;
-            const double x = radius * cos(rad);
-            const double z = radius * sin(rad);
+            const double x = radius * circle.cosines[i];
+            const double z = radius * circle.sines[i];
             MPoint p;
             switch (axis)
             {
@@ -56,17 +80,20 @@ MPointArray BellColliderSolver::makeBellPoints(const MMatrix &matrix, unsigned i
     return points;
 }
 
-MObject BellColliderSolver::makeBellMesh(const MPointArray &points, unsigned int numSides)
+MObject BellColliderSolver::makeBellMesh(const MPointArray &points, int numSides)
 {
+    if (!ColliderInput::validSubdivision(numSides) ||
+        points.length() != static_cast<unsigned int>(2 * numSides + 1))
+        return MObject::kNullObj;
     MIntArray polygonCounts, polygonConnects;
-    for (unsigned int i = 0; i < numSides; ++i)
+    for (int i = 0; i < numSides; ++i)
     {
         polygonCounts.append(3);
         polygonConnects.append(0);
         polygonConnects.append(i + 1);
         polygonConnects.append(i == numSides - 1 ? 1 : i + 2);
     }
-    for (unsigned int i = 0; i < numSides; ++i)
+    for (int i = 0; i < numSides; ++i)
     {
         polygonCounts.append(4);
         polygonConnects.append(i + 1);
@@ -83,6 +110,9 @@ MObject BellColliderSolver::makeBellMesh(const MPointArray &points, unsigned int
 
 MObject BellColliderSolver::makeBellCurve(const MPointArray &points, int bellSubdivision)
 {
+    if (!ColliderInput::validSubdivision(bellSubdivision) ||
+        points.length() != static_cast<unsigned int>(2 * bellSubdivision + 1))
+        return MObject::kNullObj;
     const int START = bellSubdivision + 1;
     const int END = points.length();
 
@@ -105,30 +135,87 @@ MObject BellColliderSolver::makeBellCurve(const MPointArray &points, int bellSub
     return curveData;
 }
 
+namespace
+{
+template <class Ops>
+BellColliderRelax::Vector<Ops> broadcast(double x, double y, double z)
+{
+    return {Ops::splat(x), Ops::splat(y), Ops::splat(z)};
+}
+
+template <class Ops>
+BellColliderRelax::Ring<Ops> prepareRelaxRing(const PreparedBellRing &ring, double collision)
+{
+    MPoint origin = ring.plane.orig;
+    MPoint translation = ring.translation;
+    if (origin.w != 1.0)
+        origin.cartesianize();
+    if (translation.w != 1.0)
+        translation.cartesianize();
+    BellColliderRelax::Ring<Ops> result;
+    result.origin = broadcast<Ops>(origin.x, origin.y, origin.z);
+    result.normal = broadcast<Ops>(ring.plane.normal.x, ring.plane.normal.y, ring.plane.normal.z);
+    result.translation = broadcast<Ops>(translation.x, translation.y, translation.z);
+    for (int column = 0; column != 3; ++column)
+        result.inverseColumns[column] = broadcast<Ops>(ring.inverse[0][column], ring.inverse[1][column],
+                                                       ring.inverse[2][column]);
+    result.collision = Ops::splat(collision);
+    return result;
+}
+
+MPoint cartesianPoint(const MPoint &point)
+{
+    MPoint result = point;
+    if (result.w != 1.0)
+        result.cartesianize();
+    return result;
+}
+} // namespace
+
 void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
                                                  int startIndex, int count)
 {
     if (!(collision > 1e-5))
         return;
 
-    const MMatrix &ringMatrixInverse = ring.inverse;
-    const MPoint &ring_translate = ring.translation;
-    const Plane &ringPlane = ring.plane;
-
-    for (int j = startIndex; j < startIndex + count; j++)
+#ifdef YDD_RELAX_SSE2
+    const auto prepared = prepareRelaxRing<BellColliderRelax::Pair>(ring, collision);
+    for (int j = startIndex; j < startIndex + count; j += 2)
     {
-        const MVector vec = ringPlane.projectPoint(points[j]) - ring_translate;
-        double vec_len = vec.length();
-        if (vec_len > 1e-5)
+        const int second = j + 1 < startIndex + count ? j + 1 : j;
+        MPoint &a = points[j];
+        MPoint &b = points[second];
+        const MPoint ca = cartesianPoint(a);
+        const MPoint cb = cartesianPoint(b);
+        const BellColliderRelax::Vector<BellColliderRelax::Pair> raw = {
+            _mm_set_pd(b.x, a.x), _mm_set_pd(b.y, a.y), _mm_set_pd(b.z, a.z)};
+        const BellColliderRelax::Vector<BellColliderRelax::Pair> cartesian = {
+            _mm_set_pd(cb.x, ca.x), _mm_set_pd(cb.y, ca.y), _mm_set_pd(cb.z, ca.z)};
+        const auto output = BellColliderRelax::relax(raw, cartesian, prepared);
+        a.x = _mm_cvtsd_f64(output.x);
+        a.y = _mm_cvtsd_f64(output.y);
+        a.z = _mm_cvtsd_f64(output.z);
+        if (second != j)
         {
-            double local_len = (vec * ringMatrixInverse).length();
-            double delta = local_len > 1e-5 ? vec_len / local_len : 1.0;
-            const MVector vec_proj_scaled = vec.normal() * delta; // scale vector
-
-            if (vec_proj_scaled.length() > vec_len)
-                points[j] += vec.normal() * (vec_proj_scaled.length() - vec_len) * collision;
+            b.x = _mm_cvtsd_f64(_mm_unpackhi_pd(output.x, output.x));
+            b.y = _mm_cvtsd_f64(_mm_unpackhi_pd(output.y, output.y));
+            b.z = _mm_cvtsd_f64(_mm_unpackhi_pd(output.z, output.z));
         }
     }
+#else
+    const auto prepared = prepareRelaxRing<BellColliderRelax::Scalar>(ring, collision);
+    for (int j = startIndex; j < startIndex + count; ++j)
+    {
+        MPoint &point = points[j];
+        const MPoint cartesian = cartesianPoint(point);
+        const BellColliderRelax::Vector<BellColliderRelax::Scalar> raw = {point.x, point.y, point.z};
+        const BellColliderRelax::Vector<BellColliderRelax::Scalar> input = {cartesian.x, cartesian.y, cartesian.z};
+        const auto output = BellColliderRelax::relax(raw, input, prepared);
+        point.x = output.x;
+        point.y = output.y;
+        point.z = output.z;
+    }
+#endif
 }
 
 bool BellColliderSolver::collisionPoints(const MMatrix &bellMatrix, const MMatrix &bellMatrixInverse,
@@ -185,7 +272,7 @@ bool BellColliderSolver::collisionPoints(const MMatrix &bellMatrix, const MMatri
     return found;
 }
 
-void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MPointArray& baseBellPoints, const Plane& bellPlane, vector<MPointArray>& bellPointsList)
+void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const std::vector<PreparedBellRing>& rings, const MPointArray& baseBellPoints, const Plane& bellPlane, vector<MPointArray>& bellPointsList)
 {
     const MMatrix bellMatrix = inputs.bellMatrix;
     const MMatrix bellMatrixInverse = bellMatrix.inverse();
@@ -198,7 +285,7 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MP
 
     bellPointsList.clear();
 
-    for (const auto &ring : inputs.rings)
+    for (const auto &ring : rings)
     {
         const MPoint &ring_translate = ring.translation;
         const MPoint ring_translate_proj = bellPlane.projectPoint(ring_translate);
@@ -224,13 +311,17 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const MP
 
                 const Plane upperBellPlane(bell_translate + bellAxis, bellNormal);
 
+                // Ring terms in bell space do not change across the top vertices of this ring.
+                const MPoint ring_translate_proj_bell = ring_translate_proj * bellMatrixInverse;
+                const MVector ringDirection_proj_bell = (ringDirection_proj * bellMatrixInverse).normal();
+
                 // bell top deformation
                 for (int j = bellSubdivision + 1; j < (int)bellPoints.length(); j++)
                 {
                     const MPoint bellPoint_proj = bellPlane.projectPoint(bellPoints[j]);
-                    const MVector offset_proj = bellPoint_proj * bellMatrixInverse - ring_translate_proj * bellMatrixInverse;
+                    const MVector offset_proj = bellPoint_proj * bellMatrixInverse - ring_translate_proj_bell;
 
-                    double weight = offset_proj.normal() * (ringDirection_proj * bellMatrixInverse).normal(); // -1..1
+                    double weight = offset_proj.normal() * ringDirection_proj_bell; // -1..1
 
                     if (weight > falloff)
                     {
@@ -308,6 +399,11 @@ void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointA
 MStatus BellColliderSolver::solve(const BellColliderInputs &inputs, const MPointArray &baseBellPoints,
                                   BellColliderOutputs &outputs)
 {
+    outputs.points.clear();
+    outputs.meanDisplacement = MVector(0, 0, 0);
+    if (!ColliderInput::validSubdivision(inputs.bellSubdivision) ||
+        baseBellPoints.length() != static_cast<unsigned int>(2 * inputs.bellSubdivision + 1))
+        return MS::kInvalidParameter;
     const MMatrix bellMatrix = inputs.bellMatrix;
     const int bellSubdivision = inputs.bellSubdivision;
 
@@ -317,10 +413,8 @@ MStatus BellColliderSolver::solve(const BellColliderInputs &inputs, const MPoint
     const Plane bellPlane(bell_translate, bellNormal);
     const bool gate = inputs.smoothness > 0.0 || inputs.followGain > 0.0;
 
-    outputs.meanDisplacement = MVector(0, 0, 0);
-
     vector<MPointArray> bellPointsList;
-    deformPoints(inputs, baseBellPoints, bellPlane, bellPointsList);
+    deformPoints(inputs, inputs.rings, baseBellPoints, bellPlane, bellPointsList);
 
     MPointArray outBellPoints;
     averageDisplacements(bellSubdivision, baseBellPoints, bellPointsList, outBellPoints, gate);

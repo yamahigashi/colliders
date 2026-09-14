@@ -14,7 +14,7 @@ class RegistrationTests(unittest.TestCase):
 
     def test_plugin_metadata_and_registered_nodes(self):
         self.assertEqual(cmds.pluginInfo("yddColliders", query=True, vendor=True), "yamahigashi")
-        self.assertEqual(cmds.pluginInfo("yddColliders", query=True, version=True), "3.0.0")
+        self.assertEqual(cmds.pluginInfo("yddColliders", query=True, version=True), "4.0.0")
         self.assertEqual(
             set(cmds.pluginInfo("yddColliders", query=True, dependNode=True)),
             {"yddBellCollider", "yddPlaneCollider", "yddSkirtBellCollider", "yddSkirtCollideDeformer", "yddSkirtWaveDeformer"},

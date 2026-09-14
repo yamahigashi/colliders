@@ -1,3 +1,5 @@
+#include <maya/MDataBlock.h>
+#include <maya/MDataHandle.h>
 #include <maya/MPlug.h>
 #include <maya/MPointArray.h>
 #include <maya/MDoubleArray.h>
@@ -21,6 +23,8 @@
 #include <cmath>
 
 #include "skirtBellCollider.h"
+#include "colliderInputValidation.h"
+#include "skirtLegProfile.h"
 #include "pluginIdentity.h"
 #include "bellColliderSolver.h"
 #include "utils.hpp"
@@ -49,6 +53,17 @@ MObject SkirtBellCollider::attr_rightHeelMatrix;
 MObject SkirtBellCollider::attr_skirtType;
 MObject SkirtBellCollider::attr_height;
 MObject SkirtBellCollider::attr_ringScale;
+MObject SkirtBellCollider::attr_thighRadiusX;
+MObject SkirtBellCollider::attr_thighRadiusZ;
+MObject SkirtBellCollider::attr_kneeRadiusX;
+MObject SkirtBellCollider::attr_kneeRadiusZ;
+MObject SkirtBellCollider::attr_calfRadiusX;
+MObject SkirtBellCollider::attr_calfRadiusZ;
+MObject SkirtBellCollider::attr_ankleRadiusX;
+MObject SkirtBellCollider::attr_ankleRadiusZ;
+MObject SkirtBellCollider::attr_thighPosition;
+MObject SkirtBellCollider::attr_calfPosition;
+
 MObject SkirtBellCollider::attr_bellScale;
 MObject SkirtBellCollider::attr_bellSubdivision;
 MObject SkirtBellCollider::attr_ringSubdivision;
@@ -167,13 +182,15 @@ MStatus SkirtBellCollider::initialize()
 
     // Bell Subdivision
     attr_bellSubdivision = nAttr.create("bellSubdivision", "bellSubdivision", MFnNumericData::kInt, 16);
-    nAttr.setMin(3);
+    nAttr.setMin(ColliderInput::kMinSubdivision);
+    nAttr.setMax(ColliderInput::kMaxSubdivision);
     nAttr.setKeyable(true);
     addAttribute(attr_bellSubdivision);
 
     // Ring Subdivision
     attr_ringSubdivision = nAttr.create("ringSubdivision", "ringSubdivision", MFnNumericData::kInt, 16);
-    nAttr.setMin(3);
+    nAttr.setMin(ColliderInput::kMinSubdivision);
+    nAttr.setMax(ColliderInput::kMaxSubdivision);
     nAttr.setKeyable(true);
     addAttribute(attr_ringSubdivision);
 
@@ -253,8 +270,63 @@ MStatus SkirtBellCollider::initialize()
     tAttr.setStorable(false);
     addAttribute(attr_outputSurface);
 
+    attr_thighRadiusX = nAttr.create("thighRadiusX", "thighRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_thighRadiusX);
+
+    attr_thighRadiusZ = nAttr.create("thighRadiusZ", "thighRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_thighRadiusZ);
+
+    attr_kneeRadiusX = nAttr.create("kneeRadiusX", "kneeRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_kneeRadiusX);
+
+    attr_kneeRadiusZ = nAttr.create("kneeRadiusZ", "kneeRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_kneeRadiusZ);
+
+    attr_calfRadiusX = nAttr.create("calfRadiusX", "calfRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_calfRadiusX);
+
+    attr_calfRadiusZ = nAttr.create("calfRadiusZ", "calfRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_calfRadiusZ);
+
+    attr_ankleRadiusX = nAttr.create("ankleRadiusX", "ankleRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_ankleRadiusX);
+
+    attr_ankleRadiusZ = nAttr.create("ankleRadiusZ", "ankleRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_ankleRadiusZ);
+
+    attr_thighPosition = nAttr.create("thighPosition", "thighPosition", MFnNumericData::kDouble, 0.5);
+    nAttr.setMin(0.0);
+    nAttr.setMax(1.0);
+    nAttr.setKeyable(true);
+    addAttribute(attr_thighPosition);
+
+    attr_calfPosition = nAttr.create("calfPosition", "calfPosition", MFnNumericData::kDouble, 0.5);
+    nAttr.setMin(0.0);
+    nAttr.setMax(1.0);
+    nAttr.setKeyable(true);
+    addAttribute(attr_calfPosition);
+
     // Set up attribute affects relationships
     const MObject affects[] = {
+        attr_thighRadiusX, attr_thighRadiusZ, attr_kneeRadiusX, attr_kneeRadiusZ,
+        attr_calfRadiusX, attr_calfRadiusZ, attr_ankleRadiusX, attr_ankleRadiusZ,
+        attr_thighPosition, attr_calfPosition,
         attr_bellMatrix, attr_leftHipMatrix, attr_leftKneeMatrix, attr_leftHeelMatrix,
         attr_rightHipMatrix, attr_rightKneeMatrix, attr_rightHeelMatrix, attr_skirtType,
         attr_height, attr_ringScale, attr_bellScale, attr_bellSubdivision,
@@ -299,6 +371,23 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
     const short rightRingAxis = dataBlock.inputValue(attr_rightRingAxis).asShort();
     const short bellAxis = dataBlock.inputValue(attr_bellAxis).asShort();
 
+    if (!ColliderInput::validSubdivision(bellSubdivision))
+    {
+        MGlobal::displayError("SkirtBellCollider: bellSubdivision must be between 3 and 4096.");
+        return MS::kInvalidParameter;
+    }
+    if (!ColliderInput::validSkirtType(skirtType))
+    {
+        MGlobal::displayError("SkirtBellCollider: skirtType must be 0 or 1.");
+        return MS::kInvalidParameter;
+    }
+    if (!ColliderInput::validAxis(leftRingAxis) || !ColliderInput::validAxis(rightRingAxis) ||
+        !ColliderInput::validAxis(bellAxis))
+    {
+        MGlobal::displayError("SkirtBellCollider: leftRingAxis, rightRingAxis and bellAxis must be between 0 and 5.");
+        return MS::kInvalidParameter;
+    }
+
     // Ramp attribute
     MRampAttribute rampAttr(thisMObject(), attr_bellScaleRamp);
 
@@ -315,6 +404,19 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
                                     ringScale, leftRingAxis, rightRingAxis, skirtType == 1);
     const double L_thigh = ringFrames.thighLength;
     const double L_calf = ringFrames.calfLength;
+
+    const SkirtLegProfile profile(
+        dataBlock.inputValue(attr_thighRadiusX).asDouble(),
+        dataBlock.inputValue(attr_thighRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_kneeRadiusX).asDouble(),
+        dataBlock.inputValue(attr_kneeRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_calfRadiusX).asDouble(),
+        dataBlock.inputValue(attr_calfRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_ankleRadiusX).asDouble(),
+        dataBlock.inputValue(attr_ankleRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_thighPosition).asDouble(),
+        dataBlock.inputValue(attr_calfPosition).asDouble(),
+        L_thigh, L_calf);
 
     const double d_hip = (H - W).length();
     const double d_knee = d_hip + L_thigh;
@@ -348,20 +450,6 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 
     const int N = (skirtType == 0) ? 2 : 3;
 
-    const PreparedBellRing leftKneeRing(ringFrames.leftKnee), rightKneeRing(ringFrames.rightKnee);
-    vector<PreparedBellRing> bellRings = {leftKneeRing, rightKneeRing};
-    vector<PreparedBellRing> ringsWithoutKnee;
-    vector<PreparedBellRing> ringsWithKnee;
-    if (skirtType == 1)
-    {
-        ringsWithoutKnee.emplace_back(ringFrames.leftHeel);
-        ringsWithoutKnee.emplace_back(ringFrames.rightHeel);
-        bellRings.insert(bellRings.end(), ringsWithoutKnee.begin(), ringsWithoutKnee.end());
-        ringsWithKnee = ringsWithoutKnee;
-        ringsWithKnee.emplace_back(ringFrames.leftExtended);
-        ringsWithKnee.emplace_back(ringFrames.rightExtended);
-    }
-
     // Setup level distances along the skirt axis
     vector<double> levelDistances;
     levelDistances.push_back(0.0);
@@ -375,6 +463,35 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
     {
         levelDistances.push_back(d_mid * s);
         levelDistances.push_back(d_knee * s);
+    }
+
+    vector<vector<PreparedBellRing>> bellRings(N + 1);
+    vector<vector<PreparedBellRing>> ringsWithoutKnee(N + 1);
+    vector<vector<PreparedBellRing>> ringsWithKnee(N + 1);
+    for (int r = 1; r <= N; ++r)
+    {
+        const double s_level = profile.levelParameter(levelDistances[r], d_hip);
+        auto prepare = [&](const MMatrix& base, SkirtLegProfile::Ring kind) {
+            const auto radius = profile.forRing(s_level, kind, ringScale.y);
+            MMatrix matrix = base;
+            for (unsigned int c = 0; c < 4; ++c)
+            {
+                matrix[0][c] *= radius.x;
+                matrix[2][c] *= radius.z;
+            }
+            return PreparedBellRing(matrix);
+        };
+        bellRings[r].push_back(prepare(ringFrames.leftKnee, SkirtLegProfile::Ring::Knee));
+        bellRings[r].push_back(prepare(ringFrames.rightKnee, SkirtLegProfile::Ring::Knee));
+        if (skirtType == 1)
+        {
+            ringsWithoutKnee[r].push_back(prepare(ringFrames.leftHeel, SkirtLegProfile::Ring::Heel));
+            ringsWithoutKnee[r].push_back(prepare(ringFrames.rightHeel, SkirtLegProfile::Ring::Heel));
+            bellRings[r].insert(bellRings[r].end(), ringsWithoutKnee[r].begin(), ringsWithoutKnee[r].end());
+            ringsWithKnee[r] = ringsWithoutKnee[r];
+            ringsWithKnee[r].push_back(prepare(ringFrames.leftExtended, SkirtLegProfile::Ring::Extended));
+            ringsWithKnee[r].push_back(prepare(ringFrames.rightExtended, SkirtLegProfile::Ring::Extended));
+        }
     }
 
     vector<MPointArray> rows(N + 1);
@@ -392,35 +509,40 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 
     const double h_safe = h_val < 1e-5 ? 1e-5 : h_val;
 
+    // Bell orientation depends only on the waist matrix and the skirt axis, so
+    // every stage of this evaluation shares one frame (bulletproof against
+    // zero/unconnected inputs).
+    const MVector dir_y = dir_vector;
+
+    const MVector raw_waist_X = xaxis(inputBellMatrix);
+    const MVector waist_X = raw_waist_X.length() < 1e-4 ? MVector(1, 0, 0) : raw_waist_X.normal();
+
+    const MVector raw_X = (waist_X - (waist_X * dir_y) * dir_y);
+    const MVector X = [&]() {
+        if (raw_X.length() < 1e-4) {
+            const MVector raw_waist_Z = zaxis(inputBellMatrix);
+            const MVector waist_Z = raw_waist_Z.length() < 1e-4 ? MVector(0, 0, 1) : raw_waist_Z.normal();
+            const MVector crossed = dir_y ^ waist_Z;
+            if (crossed.length() < 1e-4) {
+                return MVector(1, 0, 0);
+            }
+            return crossed.normal();
+        }
+        return raw_X.normal();
+    }();
+
+    const MVector raw_Z = X ^ dir_y;
+    const MVector Z = raw_Z.length() < 1e-4 ? MVector(0, 0, 1) : raw_Z.normal();
+
+    // Every stage uses the same subdivision, so the circle samples are shared.
+    const BellCircleTable circle(bellSubdivision);
+
     // Solve for each bell
     for (int i = 0; i < N; i++)
     {
         const double dist = levelDistances[i+1] - levelDistances[i];
         const double safeDist = dist < 1e-4 ? 1e-4 : dist;
         const MPoint P_bell = P_start + dir_vector * levelDistances[i];
-
-        // Build bellMatrix orientation (bulletproof against zero/unconnected inputs)
-        const MVector dir_y = dir_vector;
-
-        const MVector raw_waist_X = xaxis(inputBellMatrix);
-        const MVector waist_X = raw_waist_X.length() < 1e-4 ? MVector(1, 0, 0) : raw_waist_X.normal();
-
-        const MVector raw_X = (waist_X - (waist_X * dir_y) * dir_y);
-        const MVector X = [&]() {
-            if (raw_X.length() < 1e-4) {
-                const MVector raw_waist_Z = zaxis(inputBellMatrix);
-                const MVector waist_Z = raw_waist_Z.length() < 1e-4 ? MVector(0, 0, 1) : raw_waist_Z.normal();
-                const MVector crossed = dir_y ^ waist_Z;
-                if (crossed.length() < 1e-4) {
-                    return MVector(1, 0, 0);
-                }
-                return crossed.normal();
-            }
-            return raw_X.normal();
-        }();
-
-        const MVector raw_Z = X ^ dir_y;
-        const MVector Z = raw_Z.length() < 1e-4 ? MVector(0, 0, 1) : raw_Z.normal();
 
         // Query Ramp values using actual distance ratios
         const float t_bottom = (float)(levelDistances[i] / h_safe);
@@ -446,7 +568,7 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
         };
         const MMatrix bellMatrix(m);
 
-        MPointArray baseBellPoints = BellColliderSolver::makeBellPoints(bellMatrix, 1, bellSubdivision, 1, scale_bottom / scale_top, 1);
+        MPointArray baseBellPoints = BellColliderSolver::makeBellPoints(bellMatrix, 1, circle, 1, scale_bottom / scale_top, 1);
         BellColliderSolver::roundMeshPoints(baseBellPoints);
 
         auto solveForRings = [&](const vector<PreparedBellRing>& rings, MPointArray& outBottom, MPointArray& outTop, MVector& outMeanDisplacement) -> MStatus {
@@ -485,12 +607,12 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 
             if (tightness < 1.0f) {
                 MPointArray dummy;
-                MStatus s = solveForRings(ringsWithKnee, dummy, topWith, directWith);
+                MStatus s = solveForRings(ringsWithKnee[i + 1], dummy, topWith, directWith);
                 if (s != MS::kSuccess) return s;
             }
             if (tightness > 0.0f) {
                 MPointArray dummy;
-                MStatus s = solveForRings(ringsWithoutKnee, dummy, topWithout, directWithout);
+                MStatus s = solveForRings(ringsWithoutKnee[i + 1], dummy, topWithout, directWithout);
                 if (s != MS::kSuccess) return s;
             }
 
@@ -514,7 +636,7 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
         {
             MPointArray bottom, top;
             MVector directDisplacement;
-            MStatus s = solveForRings(bellRings, bottom, top, directDisplacement);
+            MStatus s = solveForRings(bellRings[i + 1], bottom, top, directDisplacement);
             if (s != MS::kSuccess) return s;
             if (i == 0) rows[0] = bottom;
             rows[i + 1] = top;
@@ -537,25 +659,25 @@ MStatus SkirtBellCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 
             if (skirtType == 1 && r == N)
             {
-                BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[0], collision, 0, bellSubdivision);
-                BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[1], collision, 0, bellSubdivision);
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[r][0], collision, 0, bellSubdivision);
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[r][1], collision, 0, bellSubdivision);
 
                 if (tightness < 1.0f)
                 {
                     const double kneeCollision = collision * (1.0 - tightness);
-                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithKnee[2], kneeCollision, 0, bellSubdivision);
-                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithKnee[3], kneeCollision, 0, bellSubdivision);
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithKnee[r][2], kneeCollision, 0, bellSubdivision);
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithKnee[r][3], kneeCollision, 0, bellSubdivision);
                 }
             }
             else
             {
-                BellColliderSolver::relaxTowardRingBoundary(rows[r], leftKneeRing, collision, 0, bellSubdivision);
-                BellColliderSolver::relaxTowardRingBoundary(rows[r], rightKneeRing, collision, 0, bellSubdivision);
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], bellRings[r][0], collision, 0, bellSubdivision);
+                BellColliderSolver::relaxTowardRingBoundary(rows[r], bellRings[r][1], collision, 0, bellSubdivision);
 
                 if (skirtType == 1)
                 {
-                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[0], collision, 0, bellSubdivision);
-                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[1], collision, 0, bellSubdivision);
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[r][0], collision, 0, bellSubdivision);
+                    BellColliderSolver::relaxTowardRingBoundary(rows[r], ringsWithoutKnee[r][1], collision, 0, bellSubdivision);
                 }
             }
 
@@ -672,16 +794,41 @@ MUserData* SkirtBellColliderDrawOverride::prepareForDraw(
 
     int ringSubdivision = 16;
     MPlug(obj, SkirtBellCollider::attr_ringSubdivision).getValue(ringSubdivision);
-    if (ringSubdivision < 3) ringSubdivision = 3;
 
     short leftRingAxis = 0, rightRingAxis = 0;
     MPlug(obj, SkirtBellCollider::attr_leftRingAxis).getValue(leftRingAxis);
     MPlug(obj, SkirtBellCollider::attr_rightRingAxis).getValue(rightRingAxis);
 
+    if (!ColliderInput::validSkirtType(skirtType) ||
+        !ColliderInput::validAxis(leftRingAxis) || !ColliderInput::validAxis(rightRingAxis))
+    {
+        data->drawData.rings.update({}, 0);
+        data->drawData.curves.update(MPointArray(), 0, 0);
+        return data;
+    }
+
     const SkirtRingFrames ringFrames(leftHipMatrix, leftKneeMatrix, leftHeelMatrix,
                                     rightHipMatrix, rightKneeMatrix, rightHeelMatrix,
                                     ringScale, leftRingAxis, rightRingAxis, skirtType == 1);
-    data->drawData.rings.update(ringFrames.visibleMatrices(), ringSubdivision);
+    auto getDouble = [&obj](const MObject& attr, double value) {
+        MPlug(obj, attr).getValue(value);
+        return value;
+    };
+    const SkirtLegProfile profile(
+        getDouble(SkirtBellCollider::attr_thighRadiusX, 1.0),
+        getDouble(SkirtBellCollider::attr_thighRadiusZ, 1.0),
+        getDouble(SkirtBellCollider::attr_kneeRadiusX, 1.0),
+        getDouble(SkirtBellCollider::attr_kneeRadiusZ, 1.0),
+        getDouble(SkirtBellCollider::attr_calfRadiusX, 1.0),
+        getDouble(SkirtBellCollider::attr_calfRadiusZ, 1.0),
+        getDouble(SkirtBellCollider::attr_ankleRadiusX, 1.0),
+        getDouble(SkirtBellCollider::attr_ankleRadiusZ, 1.0),
+        getDouble(SkirtBellCollider::attr_thighPosition, 0.5),
+        getDouble(SkirtBellCollider::attr_calfPosition, 0.5),
+        ringFrames.thighLength, ringFrames.calfLength);
+    std::vector<std::array<double, 2>> farMultipliers;
+    const auto matrices = ringFrames.visibleMatrices(profile, farMultipliers);
+    data->drawData.rings.update(matrices, ringSubdivision, farMultipliers);
 
     MObject surfaceData;
     MPointArray cvs;

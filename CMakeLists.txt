@@ -11,13 +11,16 @@ set(sources
   sources/bellCollider.cpp
   sources/bellCollider.h
   sources/colliderDrawGeometry.h
+  sources/colliderInputValidation.h
   sources/bellColliderSolver.cpp
   sources/bellColliderSolver.h
+  sources/bellColliderRelaxKernel.h
   sources/planeCollider.cpp
   sources/planeCollider.h
   sources/skirtBellCollider.cpp
   sources/skirtBellCollider.h
   sources/skirtRingFrames.h
+  sources/skirtLegProfile.h
   sources/skirtCollideDeformer.cpp
   sources/skirtCollideDeformer.h
   sources/skirtWaveDeformer.cpp

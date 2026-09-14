@@ -12,6 +12,7 @@ public:
     static MTypeId typeId;
 
     static MObject attr_bellMatrix;
+    static MObject attr_evaluationToWorldRotation;
     static MObject attr_amplitude;
     static MObject attr_amplitudeRamp;
     static MObject attr_idleAmplitude;
@@ -49,8 +50,9 @@ public:
 
     virtual void postConstructor() override;
     virtual MStatus deform(MDataBlock& dataBlock, MItGeometry& iter,
-        const MMatrix& localToWorldMatrix, unsigned int multiIndex) override;
+        const MMatrix&, unsigned int multiIndex) override;
 
 private:
     bool bellMatrixWarningIssued;
+    bool rotationWarningIssued;
 };

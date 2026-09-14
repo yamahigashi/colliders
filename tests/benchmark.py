@@ -30,11 +30,13 @@ def measure(node, attribute, dirty, values, iterations):
     return dict(batch_ms=batches, median_ms=statistics.median(batches))
 
 
-def run(iterations):
+def run(iterations, node_filter=None):
     from maya import cmds
 
     rows = []
     for subdivisions in (16, 64, 256):
+        if node_filter not in (None, "yddSkirtBellCollider"):
+            continue
         for tightness, smoothness, follow in ((0.5, 0, 0), (1, 0, 0), (0.5, 0.5, 0.5)):
             cmds.file(new=True, force=True)
             node, _, _ = skirt(bent=True)
@@ -49,6 +51,8 @@ def run(iterations):
                 )
             )
     for size in (133, 1088, 16512):
+        if node_filter not in (None, "yddSkirtWaveDeformer"):
+            continue
         for condition in ("active", "amplitude0", "envelope0", "signals0", "impulse_only", "periodic_only"):
             cmds.file(new=True, force=True)
             if size == 133:
@@ -76,6 +80,8 @@ def run(iterations):
                 )
             )
     for size in (80, 1088, 16512):
+        if node_filter not in (None, "yddSkirtCollideDeformer"):
+            continue
         for condition in ("active", "collision0", "envelope0"):
             cmds.file(new=True, force=True)
             obj = cylinder(size)
@@ -104,6 +110,7 @@ def main():
     p = parser(__doc__)
     p.add_argument("--output", required=True)
     p.add_argument("--iterations", type=int, default=40)
+    p.add_argument("--node", choices=("yddSkirtBellCollider", "yddSkirtWaveDeformer", "yddSkirtCollideDeformer"))
     args = p.parse_args()
     if args.iterations < 2 or args.iterations % 2:
         p.error("--iterations must be a positive even number >= 2")
@@ -115,7 +122,7 @@ def main():
             warmup=20,
             batches=5,
             iterations=args.iterations,
-            results=run(args.iterations),
+            results=run(args.iterations, args.node),
         )
         Path(args.output).write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
 

@@ -4,6 +4,7 @@
 #include <maya/MFnMatrixAttribute.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MItGeometry.h>
+#include <maya/MGlobal.h>
 #include <maya/MPoint.h>
 #include <maya/MVector.h>
 
@@ -12,6 +13,8 @@
 #include <vector>
 
 #include "skirtCollideDeformer.h"
+#include "colliderInputValidation.h"
+#include "skirtLegProfile.h"
 #include "pluginIdentity.h"
 #include "utils.hpp"
 
@@ -27,6 +30,17 @@ MObject SkirtCollideDeformer::attr_rightHeelMatrix;
 
 MObject SkirtCollideDeformer::attr_skirtType;
 MObject SkirtCollideDeformer::attr_ringScale;
+MObject SkirtCollideDeformer::attr_thighRadiusX;
+MObject SkirtCollideDeformer::attr_thighRadiusZ;
+MObject SkirtCollideDeformer::attr_kneeRadiusX;
+MObject SkirtCollideDeformer::attr_kneeRadiusZ;
+MObject SkirtCollideDeformer::attr_calfRadiusX;
+MObject SkirtCollideDeformer::attr_calfRadiusZ;
+MObject SkirtCollideDeformer::attr_ankleRadiusX;
+MObject SkirtCollideDeformer::attr_ankleRadiusZ;
+MObject SkirtCollideDeformer::attr_thighPosition;
+MObject SkirtCollideDeformer::attr_calfPosition;
+
 MObject SkirtCollideDeformer::attr_leftRingAxis;
 MObject SkirtCollideDeformer::attr_rightRingAxis;
 MObject SkirtCollideDeformer::attr_collision;
@@ -37,6 +51,7 @@ struct RingVolume
 {
     MMatrix matrix;
     MMatrix inverse;
+    SkirtLegProfile::Ring kind;
 };
 
 static bool isFiniteMatrix(const MMatrix& matrix)
@@ -67,7 +82,8 @@ static double smooth01(double t)
     return t * t * (3.0 - 2.0 * t);
 }
 
-static void appendRingVolume(const MMatrix& ringMatrix, std::vector<RingVolume>& ringVolumes)
+static void appendRingVolume(const MMatrix& ringMatrix, SkirtLegProfile::Ring kind,
+                             std::vector<RingVolume>& ringVolumes)
 {
     const double determinant = ringMatrix.det4x4();
     if (!std::isfinite(determinant) || std::fabs(determinant) < 1e-8)
@@ -78,6 +94,7 @@ static void appendRingVolume(const MMatrix& ringMatrix, std::vector<RingVolume>&
         return;
 
     RingVolume ringVolume;
+    ringVolume.kind = kind;
     ringVolume.matrix = ringMatrix;
     ringVolume.inverse = ringMatrixInverse;
     ringVolumes.push_back(ringVolume);
@@ -167,7 +184,62 @@ MStatus SkirtCollideDeformer::initialize()
     nAttr.setKeyable(true);
     addAttribute(attr_endFade);
 
+    attr_thighRadiusX = nAttr.create("thighRadiusX", "thighRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_thighRadiusX);
+
+    attr_thighRadiusZ = nAttr.create("thighRadiusZ", "thighRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_thighRadiusZ);
+
+    attr_kneeRadiusX = nAttr.create("kneeRadiusX", "kneeRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_kneeRadiusX);
+
+    attr_kneeRadiusZ = nAttr.create("kneeRadiusZ", "kneeRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_kneeRadiusZ);
+
+    attr_calfRadiusX = nAttr.create("calfRadiusX", "calfRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_calfRadiusX);
+
+    attr_calfRadiusZ = nAttr.create("calfRadiusZ", "calfRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_calfRadiusZ);
+
+    attr_ankleRadiusX = nAttr.create("ankleRadiusX", "ankleRadiusX", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_ankleRadiusX);
+
+    attr_ankleRadiusZ = nAttr.create("ankleRadiusZ", "ankleRadiusZ", MFnNumericData::kDouble, 1.0);
+    nAttr.setMin(0.001);
+    nAttr.setKeyable(true);
+    addAttribute(attr_ankleRadiusZ);
+
+    attr_thighPosition = nAttr.create("thighPosition", "thighPosition", MFnNumericData::kDouble, 0.5);
+    nAttr.setMin(0.0);
+    nAttr.setMax(1.0);
+    nAttr.setKeyable(true);
+    addAttribute(attr_thighPosition);
+
+    attr_calfPosition = nAttr.create("calfPosition", "calfPosition", MFnNumericData::kDouble, 0.5);
+    nAttr.setMin(0.0);
+    nAttr.setMax(1.0);
+    nAttr.setKeyable(true);
+    addAttribute(attr_calfPosition);
+
     const MObject affects[] = {
+        attr_thighRadiusX, attr_thighRadiusZ, attr_kneeRadiusX, attr_kneeRadiusZ,
+        attr_calfRadiusX, attr_calfRadiusZ, attr_ankleRadiusX, attr_ankleRadiusZ,
+        attr_thighPosition, attr_calfPosition,
         attr_bellMatrix,
         attr_leftHipMatrix, attr_leftKneeMatrix, attr_leftHeelMatrix,
         attr_rightHipMatrix, attr_rightKneeMatrix, attr_rightHeelMatrix,
@@ -184,7 +256,7 @@ MStatus SkirtCollideDeformer::initialize()
 }
 
 MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
-    const MMatrix& localToWorldMatrix, unsigned int multiIndex)
+    const MMatrix&, unsigned int multiIndex)
 {
     MStatus stat;
 
@@ -223,6 +295,17 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     if (collision == 0.0f || envelopeValue == 0.0f)
         return MS::kSuccess;
 
+    if (!ColliderInput::validSkirtType(skirtType))
+    {
+        MGlobal::displayError("SkirtCollideDeformer: skirtType must be 0 or 1.");
+        return MS::kInvalidParameter;
+    }
+    if (!ColliderInput::validAxis(leftRingAxis) || !ColliderInput::validAxis(rightRingAxis))
+    {
+        MGlobal::displayError("SkirtCollideDeformer: leftRingAxis and rightRingAxis must be between 0 and 5.");
+        return MS::kInvalidParameter;
+    }
+
     const MPoint LH = taxis(leftHipMatrix);
     const MPoint LK = taxis(leftKneeMatrix);
     const MPoint LHe = taxis(leftHeelMatrix);
@@ -233,14 +316,27 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     const double L_thigh = ((LK - LH).length() + (RK - RH).length()) * 0.5;
     const double L_calf = ((LHe - LK).length() + (RHe - RK).length()) * 0.5;
 
+    const SkirtLegProfile profile(
+        dataBlock.inputValue(attr_thighRadiusX).asDouble(),
+        dataBlock.inputValue(attr_thighRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_kneeRadiusX).asDouble(),
+        dataBlock.inputValue(attr_kneeRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_calfRadiusX).asDouble(),
+        dataBlock.inputValue(attr_calfRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_ankleRadiusX).asDouble(),
+        dataBlock.inputValue(attr_ankleRadiusZ).asDouble(),
+        dataBlock.inputValue(attr_thighPosition).asDouble(),
+        dataBlock.inputValue(attr_calfPosition).asDouble(),
+        L_thigh, L_calf);
+
     const MVector thighScale(ringScale.x, L_thigh * ringScale.y, ringScale.z);
     const MMatrix leftHipToKnee = createRingMatrix(leftHipMatrix, thighScale, leftRingAxis, &LK);
     const MMatrix rightHipToKnee = createRingMatrix(rightHipMatrix, thighScale, rightRingAxis, &RK);
 
     std::vector<RingVolume> ringVolumes;
     ringVolumes.reserve(6);
-    appendRingVolume(leftHipToKnee, ringVolumes);
-    appendRingVolume(rightHipToKnee, ringVolumes);
+    appendRingVolume(leftHipToKnee, SkirtLegProfile::Ring::Knee, ringVolumes);
+    appendRingVolume(rightHipToKnee, SkirtLegProfile::Ring::Knee, ringVolumes);
 
     if (skirtType == 1)
     {
@@ -251,17 +347,16 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         const MMatrix leftHipToKneeExtended = createRingMatrix(leftHipMatrix, heelScale, leftRingAxis, &LK);
         const MMatrix rightHipToKneeExtended = createRingMatrix(rightHipMatrix, heelScale, rightRingAxis, &RK);
 
-        appendRingVolume(leftHipToKneeExtended, ringVolumes);
-        appendRingVolume(rightHipToKneeExtended, ringVolumes);
-        appendRingVolume(leftHipToHeel, ringVolumes);
-        appendRingVolume(rightHipToHeel, ringVolumes);
+        appendRingVolume(leftHipToKneeExtended, SkirtLegProfile::Ring::Extended, ringVolumes);
+        appendRingVolume(rightHipToKneeExtended, SkirtLegProfile::Ring::Extended, ringVolumes);
+        appendRingVolume(leftHipToHeel, SkirtLegProfile::Ring::Heel, ringVolumes);
+        appendRingVolume(rightHipToHeel, SkirtLegProfile::Ring::Heel, ringVolumes);
     }
 
-    const MPoint bellPosition = taxis(bellMatrix);
+    const MPoint bellEvaluationPosition = taxis(bellMatrix);
     const MVector rawBellAxis = getAxis(bellMatrix, 1);
     const MVector bellAxisDirection = rawBellAxis.length() > 1e-8 ? rawBellAxis.normal() : MVector(0.0, -1.0, 0.0);
 
-    const MMatrix worldToLocalMatrix = localToWorldMatrix.inverse();
     for (; !iter.isDone(); iter.next())
     {
         const float pointWeight = weightValue(dataBlock, multiIndex, iter.index());
@@ -269,14 +364,14 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         if (!std::isfinite(strength) || strength == 0.0)
             continue;
 
-        MPoint pointWorld = iter.position() * localToWorldMatrix;
+        MPoint pointEvaluation = iter.position();
         bool changed = false;
 
         // Push direction reference: the skirt cone's radial direction from the bell
         // axis (bellMatrix Y). Using the point's own leg-radial direction flips the
         // push to the far side once a point tunnels past the leg axis.
-        const MVector bellRadialWorld = [&]() {
-            const MVector offset = pointWorld - bellPosition;
+        const MVector bellRadialEvaluation = [&]() {
+            const MVector offset = pointEvaluation - bellEvaluationPosition;
             const MVector radial = offset - bellAxisDirection * (offset * bellAxisDirection);
             return radial.length() > 1e-8 ? radial.normal() : MVector(0.0, 0.0, 0.0);
         }();
@@ -284,7 +379,7 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
         for (std::size_t i = 0; i < ringVolumes.size(); i++)
         {
             const RingVolume& ringVolume = ringVolumes[i];
-            MPoint pointRing = pointWorld * ringVolume.inverse;
+            MPoint pointRing = pointEvaluation * ringVolume.inverse;
             // The ring frame spans hip (y=0) to target (y=1); the mirrored y<0 lobe
             // is above the hip and must never collide (it grabbed the waist rows).
             // Both ends fade smoothly (crossing a hard y gate popped the correction
@@ -307,8 +402,11 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
             else if (y > 1.0)
                 continue;
 
-            // Cylinder volume (constant unit radius along the segment): the previous
-            // spherical taper vanished at y=1, leaving the hem uncorrected.
+            const double s = profile.parameter(y, ringVolume.kind, ringScale.y);
+            const auto radius = profile.forRing(s, ringVolume.kind, ringScale.y);
+            pointRing.x /= radius.x;
+            pointRing.z /= radius.z;
+
             const double r_needed = 1.0;
             const double band = (double)falloff;
 
@@ -327,9 +425,14 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
 
             // Direction in ring local XZ, from the bell-radial reference; fall back to
             // the point's own radial direction when the reference degenerates.
-            MVector pushDirection = bellRadialWorld * ringVolume.inverse;
+            MVector pushDirection = bellRadialEvaluation * ringVolume.inverse;
             pushDirection.y = 0.0;
-            if (pushDirection.length() > 1e-8)
+            // Degeneracy is judged before the per-axis scaling so a tiny reference
+            // vector cannot be inflated past the threshold by a small radius.
+            const bool referenceValid = pushDirection.length() > 1e-8;
+            pushDirection.x /= radius.x;
+            pushDirection.z /= radius.z;
+            if (referenceValid)
                 pushDirection.normalize();
             else if (r_xz > 1e-8)
                 pushDirection = MVector(pointRing.x / r_xz, 0.0, pointRing.z / r_xz);
@@ -375,21 +478,19 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
             pointRing.x += pushDirection.x * shift;
             pointRing.z += pushDirection.z * shift;
 
-            const MPoint pushedWorld = pointRing * ringVolume.matrix;
-            if (!isFinitePoint(pushedWorld))
+            pointRing.x *= radius.x;
+            pointRing.z *= radius.z;
+            const MPoint pushedEvaluation = pointRing * ringVolume.matrix;
+            if (!isFinitePoint(pushedEvaluation))
                 continue;
 
-            pointWorld = pushedWorld;
+            pointEvaluation = pushedEvaluation;
             changed = true;
         }
 
         if (changed)
         {
-            const MPoint pointObject = pointWorld * worldToLocalMatrix;
-            if (!isFinitePoint(pointObject))
-                continue;
-
-            stat = iter.setPosition(pointObject);
+            stat = iter.setPosition(pointEvaluation);
             CHECK_MSTATUS_AND_RETURN_IT(stat);
         }
     }

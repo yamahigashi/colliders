@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <maya/MFloatPointArray.h>
 #include <maya/MFnMesh.h>
@@ -7,6 +8,7 @@
 #include <maya/MMatrix.h>
 #include <maya/MPointArray.h>
 #include <maya/MUIDrawManager.h>
+#include "colliderInputValidation.h"
 #include <vector>
 
 namespace ColliderDraw {
@@ -57,13 +59,31 @@ inline void appendLines(MPointArray &lines, const MPointArray &points,
 struct Rings {
   Geometry geometry;
   std::vector<MMatrix> matrices;
+  std::vector<std::array<double, 2>> farMultipliers;
   MPointArray unitPoints;
   MIntArray indices;
   int subdivision = 0;
-  bool update(const std::vector<MMatrix> &next, int sides) {
-    if (sides < 3)
-      sides = 3;
-    if (subdivision == sides && sameMatrices(matrices, next))
+  bool clearInvalidCache() {
+    const bool changed = subdivision != 0 || !matrices.empty() ||
+                         !farMultipliers.empty() || unitPoints.length() != 0 ||
+                         indices.length() != 0 || geometry.triangles.length() != 0 ||
+                         geometry.lines.length() != 0;
+    geometry.triangles.clear();
+    geometry.lines.clear();
+    matrices.clear();
+    farMultipliers.clear();
+    unitPoints.clear();
+    indices.clear();
+    subdivision = 0;
+    return changed;
+  }
+  bool update(const std::vector<MMatrix> &next, int sides,
+              const std::vector<std::array<double, 2>> &nextFar = {}) {
+    if (!ColliderInput::validSubdivision(sides) ||
+        (!nextFar.empty() && nextFar.size() != next.size()))
+      return clearInvalidCache();
+    if (subdivision == sides && sameMatrices(matrices, next) &&
+        farMultipliers == nextFar)
       return false;
     if (subdivision != sides) {
       subdivision = sides;
@@ -83,12 +103,22 @@ struct Rings {
       }
     }
     matrices = next;
+    farMultipliers = nextFar;
     geometry.triangles.clear();
     geometry.lines.clear();
-    for (const auto &matrix : matrices) {
+    for (size_t m = 0; m < matrices.size(); ++m) {
+      const auto &matrix = matrices[m];
+      const std::array<double, 2> endRadius =
+          farMultipliers.empty() ? std::array<double, 2>{{1.0, 1.0}}
+                                 : farMultipliers.at(m);
       MPointArray points;
       for (unsigned int i = 0; i < unitPoints.length(); ++i) {
-        const MPoint p = unitPoints[i] * matrix;
+        MPoint unit = unitPoints[i];
+        if (i > static_cast<unsigned int>(sides)) {
+          unit.x *= endRadius[0];
+          unit.z *= endRadius[1];
+        }
+        const MPoint p = unit * matrix;
         points.append(MPoint(static_cast<float>(p.x), static_cast<float>(p.y),
                              static_cast<float>(p.z)));
       }

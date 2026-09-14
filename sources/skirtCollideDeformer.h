@@ -21,6 +21,17 @@ public:
 
     static MObject attr_skirtType;
     static MObject attr_ringScale;
+    static MObject attr_thighRadiusX;
+    static MObject attr_thighRadiusZ;
+    static MObject attr_kneeRadiusX;
+    static MObject attr_kneeRadiusZ;
+    static MObject attr_calfRadiusX;
+    static MObject attr_calfRadiusZ;
+    static MObject attr_ankleRadiusX;
+    static MObject attr_ankleRadiusZ;
+    static MObject attr_thighPosition;
+    static MObject attr_calfPosition;
+
     static MObject attr_leftRingAxis;
     static MObject attr_rightRingAxis;
     static MObject attr_collision;
@@ -34,5 +45,5 @@ public:
     static MStatus initialize();
 
     virtual MStatus deform(MDataBlock& dataBlock, MItGeometry& iter,
-        const MMatrix& localToWorldMatrix, unsigned int multiIndex) override;
+        const MMatrix&, unsigned int multiIndex) override;
 };

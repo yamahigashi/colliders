@@ -32,6 +32,7 @@
 #include <maya/MFnMatrixData.h>
 
 #include "planeCollider.h"
+#include "colliderInputValidation.h"
 #include "pluginIdentity.h"
 #include "utils.hpp"
 
@@ -56,13 +57,15 @@ MStatus PlaneCollider::compute(const MPlug& plug, MDataBlock& dataBlock)
 
     const MMatrix planeMatrix = dataBlock.inputValue(attr_planeMatrix).asMatrix();
     const short normalAxis = dataBlock.inputValue(attr_normalAxis).asShort();
-
-    const int NORMAL_AXIS_INDEX = normalAxis < 3 ? normalAxis : normalAxis - 3;
-    const int NORMAL_AXIS_SIGN = normalAxis > 2 ? -1 : 1;
+    if (!ColliderInput::validAxis(normalAxis))
+    {
+        MGlobal::displayError("PlaneCollider: normalAxis must be between 0 and 5.");
+        return MS::kInvalidParameter;
+    }
 
     const MVector inputPosition = dataBlock.inputValue(attr_inputPosition).asVector();
 
-    Plane plane(maxis(planeMatrix, 3), NORMAL_AXIS_SIGN * maxis(planeMatrix, NORMAL_AXIS_INDEX));
+    Plane plane(taxis(planeMatrix), getAxis(planeMatrix, normalAxis));
 
     MPoint outputPosition = inputPosition;
     if (plane.distance(inputPosition) < 0)
@@ -158,6 +161,11 @@ MUserData* PlaneColliderDrawOverride::prepareForDraw(
 
     short normalAxis = 1;
     normalAxisPlug.getValue(normalAxis);
+    if (!ColliderInput::validAxis(normalAxis))
+    {
+        data->drawData.size = 0.0;
+        return data;
+    }
 
     double rVal = 0.0, gVal = 0.01, bVal = 0.11;
     if (drawColorPlug.numChildren() == 3)
@@ -170,15 +178,13 @@ MUserData* PlaneColliderDrawOverride::prepareForDraw(
     float drawOpacity = 0.3f;
     drawOpacityPlug.getValue(drawOpacity);
 
-    const int NORMAL_AXIS_INDEX = normalAxis < 3 ? normalAxis : normalAxis - 3;
-    const int NORMAL_AXIS_SIGN = normalAxis > 2 ? -1 : 1;
-
-    Plane plane(taxis(planeMatrix), NORMAL_AXIS_SIGN * maxis(planeMatrix, NORMAL_AXIS_INDEX));
+    const MVector normal = getAxis(planeMatrix, normalAxis);
+    Plane plane(taxis(planeMatrix), normal);
 
     data->drawData.color = MColor(rVal, gVal, bVal, drawOpacity);
     data->drawData.planeCenter = plane.orig;
     data->drawData.planeNormal = plane.normal;
-    data->drawData.size = maxis(planeMatrix, NORMAL_AXIS_INDEX).length();
+    data->drawData.size = normal.length();
 
     return data;
 }
@@ -191,7 +197,7 @@ void PlaneColliderDrawOverride::addUIDrawables(
 {
     auto* PlaneColliderData = dynamic_cast<const PlaneColliderDrawData*>(data);
 
-    if (PlaneColliderData)
+    if (PlaneColliderData && PlaneColliderData->drawData.size > 0.0)
     {
         drawManager.beginDrawable();
         drawManager.setColor(PlaneColliderData->drawData.color);

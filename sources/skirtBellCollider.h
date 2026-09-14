@@ -40,6 +40,17 @@ public:
     static MObject attr_skirtType;
     static MObject attr_height;
     static MObject attr_ringScale;
+    static MObject attr_thighRadiusX;
+    static MObject attr_thighRadiusZ;
+    static MObject attr_kneeRadiusX;
+    static MObject attr_kneeRadiusZ;
+    static MObject attr_calfRadiusX;
+    static MObject attr_calfRadiusZ;
+    static MObject attr_ankleRadiusX;
+    static MObject attr_ankleRadiusZ;
+    static MObject attr_thighPosition;
+    static MObject attr_calfPosition;
+
     static MObject attr_bellScale;
     static MObject attr_bellSubdivision;
     static MObject attr_ringSubdivision;

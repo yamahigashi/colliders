@@ -9,6 +9,15 @@ $mayapy = 'C:\Program Files\Autodesk\Maya2026\bin\mayapy.exe'
 
 The runner uses standard-library `unittest`, skips Python user setup, adds this checkout's `scripts` directory to `sys.path`, and closes Maya in a `finally` block. A failed test, load error, or empty discovery returns a nonzero exit status. Run each binary in a separate process.
 
+`test_input_validation.py` drives invalid values through connected plugs and
+checks that computation reports an error and recovers after restoring a valid
+value. Bell and ring subdivision accept 3 through 4096, skirt type accepts 0
+or 1, and axis enums accept 0 through 5. Invalid ring drawing inputs clear the
+draw cache. `test_noise_inputs.py` covers extreme finite noise coordinates and
+checks that nonfinite noise coordinates contribute zero noise. Run hostile
+input tests only against a binary containing the input validation changes, in
+a separate process with an external timeout; older binaries can hang or crash.
+
 Current capture tools create only `ydd` node types. For comparisons between
 two current binaries, capture both with this checkout and the same Maya
 version:
@@ -48,7 +57,7 @@ $env:PATH = 'C:\Program Files\Autodesk\Maya2026\bin;' + $env:PATH
 ctest --test-dir build/draw-tests -C Release --output-on-failure
 ```
 
-With these tests you can check triangle connectivity, wire closure, transformed coordinates, cache invalidation, and the shared Skirt ring frames for unequal left/right leg lengths.
+With these tests you can check triangle connectivity, wire closure, transformed coordinates, cache invalidation, and the shared Skirt ring frames for unequal left/right leg lengths. The `solver_input` test also checks invalid subdivision, mismatched point arrays, matrix row bounds, and recovery at the C++ solver boundary. It also compares `BellCircleTable` bell points against an inline copy of the historical per-point trigonometry for subdivisions 3 through 4096, three axes, and a skewed matrix, requiring bitwise equality.
 
 Run the viewport smoke test in a new, dedicated Maya GUI process. You will replace its scene and change its display preferences. Paste this example into the Python tab of the Script Editor; use absolute paths for the checkout, plugin, and output directory:
 
@@ -70,6 +79,17 @@ maya.utils.executeDeferred(
 Inspect `result.json` and the PNG files in the output directory. Require `passed: true`, an empty `errors` list, and all pixel checks to pass. Check the images for Bell and Skirt drawing, including the asymmetric legs. The test compares raw pixel hashes after same-frame edits and restoration, visibility changes, camera changes, and a time round trip. It also checks for colored drawing before hiding the colliders and its absence afterward. You must assess Cached Playback and playback FPS in separate tests. Close the dedicated Maya process after reviewing the results; `main()` leaves it open.
 
 
+`test_deformers.py` covers the wave deformer's hidden `evaluationToWorldRotation`
+(`etwr`) matrix. The tests check the identity default and attribute flags, that
+an explicit identity leaves the output bitwise unchanged, that a World
+direction under a rotation equals the same direction pre-rotated by the inverse
+with the input strength kept for impulse, that a tilt keeps the transformed Y
+component and attenuates by the projection without renormalizing, that Bell
+Local directions ignore the matrix, that scale, shear, reflection,
+translation, perspective, and nonfinite matrices pass the geometry through and
+recover on the next valid value, and that the value and its connection survive
+`.ma` and `.mb` round trips.
+
 `test_registration.py` checks the plugin vendor/version and an independent
 list of five node names, IDs, API kinds, and locator draw classifications.
 It also checks the public Python module and prefixed custom node names.
@@ -84,8 +104,46 @@ the component repository root:
 
 The integration check builds three wave/post-collision configurations and
 checks the host attributes, connections, deformer order, initial zero wave,
-and active surface deformation. Its JSON includes source and plugin hashes.
-The component and guide must both report version 3.0.0.
+and active surface deformation. It then rebuilds with the grid rows offset
+above the waist reference, entirely above the hips, and past the heels, and
+requires every driver to sit on its guide position. Its JSON includes source and plugin hashes.
+The component and guide must both report version 4.1.0. The check also verifies the column-major grid naming, the guide locator chain, the joint chain, that a flat pre-4.0.0 guide is rejected, that the ten leg profile parameters reach both collider nodes, and that fitting the profile from a synthetic body mesh recovers known station ratios.
+
+The local component requires plugin major 4. Wave and post collision operate in
+geometry object coordinates. Their references must use that same space; the
+surface transform inherits the component root. World signal directions use
+`evaluationToWorldRotation`. There is no World/Object evaluation switch.
+
+`check_local_evaluation.py`, called by the integration runner, verifies the
+surface's inherited transform, local geometry and matrix connections, skin
+influence and final-surface weight queries through both Maya APIs, and zero
+collider/rebuild computes on root edits. Maya's standard skin geometry connection
+is retained; skin may compute once on a root edit. Six guide configurations cover translation, rotation,
+scale, short skirts, and different rebuild/ring settings. Keyed forward and
+backward time changes exercise a nonempty Serial/Parallel evaluation graph and
+reject fallback. Maya 2026 also compares positions and basis directions against
+the recorded world-space rig in `reference/skirt_world_2026.json.gz` and checks
+74 contact poses at strengths 0, 1, and 2 against
+`reference/skirt_secondary_world_2026.json.gz`. Five authored guide variants
+also compare against `reference/skirt_guides_world_2026.json.gz`, including
+ring edits after moving and rotating the guide. All three references include
+source hashes and tolerances. Contact toggles must return to their original output.
+
+To time the complete component, including final surface, controls, and joints:
+
+```powershell
+& $mayapy -B tests/integration/benchmark_skirt_component.py --plugin C:\build\yddColliders.mll --mgear-release C:\mgear\release --components-root C:\mgear_shifter_components --output rig-timing.json --mode off --mode serial --mode parallel --warmup 20 --batches 5 --iterations 60 --profile
+```
+
+Run baseline and candidate in separate processes with no concurrent Maya jobs.
+Numerical capture uses the surface DAG path in world space and runs outside the
+timed interval. `--profile` adds a separate DG-only `dgtimer` pass; it does not
+time Serial/Parallel execution. The JSON retains every batch and per-node
+compute/dirty/fetch/callback counters. Inclusive node times overlap and must not
+be added together. Inputs change through `MPlug`, followed by explicit output
+pulls; selecting Serial/Parallel here does not establish EM playback throughput.
+Use the keyed integration check for EM correctness. These measurements exclude
+GUI drawing and Cached Playback.
 
 
 Add `--upstream-plugin C:\upstream\colliders.mll` to test consumer autoload
@@ -96,3 +154,5 @@ component plugin guard and checks both loaded paths and registered node
 sets. It then builds all three rig configurations with both plugins loaded.
 The JSON records the autoload check, both binary hashes, and coexistence
 checks after each rig build.
+
+SIMD 緩和処理の実測と再現手順は [simd-relaxation.md](../docs/validation/simd-relaxation.md) を参照してください。

@@ -27,6 +27,23 @@ class DeformerTests(unittest.TestCase):
         path = om.MSelectionList().add(shape).getDagPath(0)
         return [tuple(p)[:3] for p in om.MFnMesh(path).getPoints()]
 
+    def world_points(self, mesh):
+        shape = cmds.listRelatives(mesh, shapes=True, noIntermediate=True, fullPath=True)[0]
+        path = om.MSelectionList().add(shape).getDagPath(0)
+        return [tuple(p)[:3] for p in om.MFnMesh(path).getPoints(om.MSpace.kWorld)]
+
+    def transform_matrix(self, translation, rotation, scale):
+        transform = om.MTransformationMatrix()
+        transform.setTranslation(om.MVector(*translation), om.MSpace.kTransform)
+        transform.setRotation(om.MEulerRotation(*(math.radians(value) for value in rotation)))
+        transform.setScale((scale, scale, scale), om.MSpace.kTransform)
+        return list(transform.asMatrix())
+
+    def assert_world_is_one_transform(self, mesh, object_points):
+        world_matrix = om.MMatrix(cmds.getAttr(mesh + ".worldMatrix[0]"))
+        expected = [tuple(om.MPoint(*point) * world_matrix)[:3] for point in object_points]
+        self.assert_points_close(self.world_points(mesh), expected, tolerance=1e-9)
+
     def collision(self, mesh, long=False):
         node = cmds.deformer(mesh, type="yddSkirtCollideDeformer")[0]
         for side, x in [("left", 0), ("right", 10)]:
@@ -91,6 +108,201 @@ class DeformerTests(unittest.TestCase):
                         cmds.setAttr(node + "." + attr, 1)
                     cmds.setAttr(node + ".weightList[0].weights[1]", 0)
                     self.assertEqual(self.points(mesh)[1], original[1])
+
+    def set_profile(self, node, **values):
+        for name, value in values.items():
+            cmds.setAttr(node + "." + name, value)
+
+    def bent_collision(self, mesh):
+        node = self.collision(mesh, long=True)
+        for side, x in (("left", 0), ("right", 10)):
+            cmds.setAttr(node + "." + side + "KneeMatrix", *matrix(x, 1, 3), type="matrix")
+        return node
+
+    def test_leg_profile_attribute_contract(self):
+        radii = [station + "Radius" + axis for station in ("thigh", "knee", "calf", "ankle") for axis in ("X", "Z")]
+        for node_type in ("yddSkirtBellCollider", "yddSkirtCollideDeformer"):
+            node = cmds.createNode(node_type)
+            for name in radii + ["thighPosition", "calfPosition"]:
+                with self.subTest(node_type=node_type, attribute=name):
+                    radius = name in radii
+                    self.assertEqual(cmds.getAttr(node + "." + name, type=True), "double")
+                    self.assertEqual(cmds.getAttr(node + "." + name), 1 if radius else 0.5)
+                    self.assertTrue(cmds.getAttr(node + "." + name, keyable=True))
+                    self.assertEqual(cmds.attributeQuery(name, node=node, minimum=True), [0.001 if radius else 0])
+                    self.assertEqual(cmds.attributeQuery(name, node=node, maxExists=True), not radius)
+                    if not radius:
+                        self.assertEqual(cmds.attributeQuery(name, node=node, maximum=True), [1])
+
+    def test_leg_profile_knee_shrinks_push(self):
+        mesh = self.mesh([(0.2, 0.1, 0), (0.2, 1, 0), (0.2, 0.5, 0.1)])
+        node = self.collision(mesh)
+        self.set_profile(node, kneeRadiusX=0.7, kneeRadiusZ=0.7)
+        result = self.points(mesh)
+        self.assertAlmostEqual(result[0][0], 1, delta=1e-6)
+        self.assertAlmostEqual(result[1][0], 0.7, delta=1e-6)
+        self.assertLess(result[1][0] - 0.2, result[0][0] - 0.2)
+        self.set_profile(node, kneeRadiusX=1, kneeRadiusZ=1)
+        self.assertAlmostEqual(self.points(mesh)[1][0], 1, delta=1e-6)
+
+    def test_leg_profile_ankle_extension_with_end_fade(self):
+        leg_length = 2 * math.sqrt(10)
+        mesh = self.mesh([(0.25, 1.05 * leg_length, 0), (0.25, leg_length, 0), (0.25, 1.2 * leg_length, 0)])
+        node = self.bent_collision(mesh)
+        self.set_profile(node, ankleRadiusX=0.5, ankleRadiusZ=0.5, endFade=0.1)
+        result = self.points(mesh)
+        self.assertAlmostEqual(result[0][0], 0.375, delta=1e-6)
+        self.assertAlmostEqual(result[1][0], 0.5, delta=1e-6)
+        self.assertAlmostEqual(result[2][0], 0.25, delta=1e-6)
+
+    def test_leg_profile_coincident_thigh_and_calf_stations(self):
+        for thigh_position in (0, 1):
+            for calf_position in (0, 1):
+                with self.subTest(thigh_position=thigh_position, calf_position=calf_position):
+                    mesh = self.mesh([(0.1, 1e-6, 0), (0.1, 1, 0), (0.1, 0.5, 0)])
+                    node = self.collision(mesh)
+                    self.set_profile(
+                        node,
+                        thighPosition=thigh_position,
+                        calfPosition=calf_position,
+                        thighRadiusX=1.2,
+                        thighRadiusZ=1.2,
+                        kneeRadiusX=0.7,
+                        kneeRadiusZ=0.7,
+                        calfRadiusX=0.8,
+                        calfRadiusZ=0.8,
+                        ankleRadiusX=0.6,
+                        ankleRadiusZ=0.6,
+                        endFade=0,
+                    )
+                    result = self.points(mesh)
+                    expected_near_hip = (1.2 if thigh_position == 0 else 1) * (1 - 1e-6) + 0.7 * 1e-6
+                    self.assertAlmostEqual(result[0][0], expected_near_hip, delta=1e-6)
+                    self.assertAlmostEqual(result[1][0], 0.7, delta=1e-6)
+                    self.assertTrue(all(math.isfinite(v) for point in result for v in point))
+                    leg_length = 2 * math.sqrt(10)
+                    station_y = leg_length * (0.5 + 0.5 * calf_position)
+                    mesh = self.mesh([(0.1, station_y, 0), (0.2, station_y, 0), (0.1, station_y, 0.1)])
+                    node = self.bent_collision(mesh)
+                    self.set_profile(
+                        node,
+                        thighPosition=thigh_position,
+                        calfPosition=calf_position,
+                        thighRadiusX=1.2,
+                        thighRadiusZ=1.2,
+                        kneeRadiusX=0.7,
+                        kneeRadiusZ=0.7,
+                        calfRadiusX=0.8,
+                        calfRadiusZ=0.8,
+                        ankleRadiusX=0.6,
+                        ankleRadiusZ=0.6,
+                        endFade=0.1,
+                    )
+                    result = self.points(mesh)
+                    self.assertAlmostEqual(result[0][0], 0.7 if calf_position == 0 else 0.6, delta=1e-6)
+                    self.assertTrue(all(math.isfinite(v) for point in result for v in point))
+
+    def test_leg_profile_anisotropic_chord_and_push_direction(self):
+        original = [(0.2, 0.5, 0.15), (0.1, 0.5, 0.3), (0.3, 0.5, -0.2)]
+        mesh = self.mesh(original)
+        node = self.collision(mesh)
+        self.set_profile(node, thighRadiusX=1.4, thighRadiusZ=0.6, collision=1, falloff=0)
+        cmds.setAttr(node + ".bellMatrix", *matrix(-0.4, 0, 0.2), type="matrix")
+        for point, source in zip(self.points(mesh), original):
+            x, y, z = point
+            self.assertAlmostEqual((z / 1.4) ** 2 + (x / 0.6) ** 2, 1, delta=1e-6)
+            self.assertAlmostEqual(y, source[1], delta=1e-6)
+            dx, dz = x - source[0], z - source[2]
+            self.assertAlmostEqual(dx * (source[2] - 0.2) - dz * (source[0] + 0.4), 0, delta=1e-6)
+            self.assertGreater(dx * (source[0] + 0.4) + dz * (source[2] - 0.2), 0)
+
+    def test_leg_profile_calf_changes_long_hem(self):
+        leg_length = 2 * math.sqrt(10)
+        mesh = self.mesh([(0.2, s * leg_length, 0) for s in (0.7, 0.75, 0.8)])
+        node = self.bent_collision(mesh)
+        baseline = self.points(mesh)
+        self.set_profile(node, calfRadiusX=0.8, calfRadiusZ=0.8)
+        result = self.points(mesh)
+        for point, previous, expected in zip(result, baseline, (0.84, 0.8, 0.84)):
+            self.assertAlmostEqual(previous[0], 1, delta=1e-6)
+            self.assertAlmostEqual(point[0], expected, delta=1e-6)
+            self.assertLess(point[0], previous[0])
+
+    def test_leg_profile_extended_keeps_knee_radius(self):
+        mesh = self.mesh([(0.2, 1.5, 0), (0.2, 1.6, 0), (0.2, 1.7, 0)])
+        node = self.collision(mesh, long=True)
+        self.set_profile(
+            node, kneeRadiusX=0.9, kneeRadiusZ=0.9, calfRadiusX=0.5, calfRadiusZ=0.5, ankleRadiusX=0.4, ankleRadiusZ=0.4
+        )
+        for point in self.points(mesh):
+            self.assertAlmostEqual(point[0], 0.9, delta=1e-6)
+
+    def test_leg_profile_degenerate_lengths_and_effective_length_guard(self):
+        for calf_length in (0, 1):
+            mesh = self.mesh([(0.1, 1, 0), (0.2, 1, 0), (0.1, 1, 0.1)])
+            node = self.collision(mesh)
+            for side, x in (("left", 0), ("right", 10)):
+                cmds.setAttr(node + "." + side + "HeelMatrix", *matrix(x, 1 + calf_length), type="matrix")
+            self.set_profile(node, kneeRadiusX=0.7, kneeRadiusZ=0.7, ankleRadiusX=1.3, ankleRadiusZ=1.3)
+            self.assertAlmostEqual(self.points(mesh)[0][0], 1.3 if calf_length == 0 else 0.7, delta=1e-6)
+        mesh = self.mesh([(0.1, 1e-5, 0), (0.1, 1, 0), (0.1, 2, 0)])
+        node = self.collision(mesh, long=True)
+        for side, x in (("left", 0), ("right", 10)):
+            cmds.setAttr(node + "." + side + "KneeMatrix", *matrix(x, 0), type="matrix")
+        self.set_profile(
+            node,
+            kneeRadiusX=0.7,
+            kneeRadiusZ=0.7,
+            calfRadiusX=1.2,
+            calfRadiusZ=1.2,
+            ankleRadiusX=0.9,
+            ankleRadiusZ=0.9,
+            endFade=0,
+        )
+        for point, expected in zip(self.points(mesh), (0.700005, 1.2, 0.9)):
+            self.assertAlmostEqual(point[0], expected, delta=1e-6)
+        mesh = self.mesh([(0.2, 0.5e-7, 0), (0.3, 0.5e-7, 0), (0.2, 0.5e-7, 0.1)])
+        node = self.collision(mesh)
+        self.set_profile(node, thighPosition=0, thighRadiusX=0.2, thighRadiusZ=0.2, kneeRadiusX=0.2, kneeRadiusZ=0.2, endFade=0)
+        cmds.setAttr(node + ".ringScale1", 1e-7)
+        self.assertAlmostEqual(self.points(mesh)[0][0], 1, delta=1e-6)
+
+    def test_leg_profile_falloff_band_is_relative_per_axis(self):
+        # With ring axis Y the ring frame X lies along world Z and the frame Z along
+        # world X. Points at the same normalized radius 1.1 on both frame axes sit
+        # inside the falloff band of their own axis and must receive the same
+        # normalized shift; a point at absolute radius 1.1 along world X (frame Z,
+        # multiplier 0.6) is far outside the band and must not move.
+        mesh = self.mesh([(0, 0.5, 1.4 * 1.1), (0.6 * 1.1, 0.5, 0), (1.1, 0.5, 0)])
+        node = self.collision(mesh)
+        cmds.setAttr(node + ".falloff", 0.2)
+        self.set_profile(node, thighRadiusX=1.4, thighRadiusZ=0.6, kneeRadiusX=1.4, kneeRadiusZ=0.6, endFade=0)
+        points = self.points(mesh)
+        shift_frame_x = (points[0][2] - 1.4 * 1.1) / 1.4
+        shift_frame_z = (points[1][0] - 0.6 * 1.1) / 0.6
+        self.assertGreater(shift_frame_x, 1e-4)
+        self.assertAlmostEqual(shift_frame_x, shift_frame_z, delta=1e-6)
+        self.assertAlmostEqual(points[2][0], 1.1, delta=1e-6)
+
+    def test_leg_profile_zero_calf_extended_ring_uses_ankle(self):
+        # With the heel on the knee the knee and ankle nodes coincide and the ankle
+        # node wins, so every ring including the extended one reads the ankle value.
+        mesh = self.mesh([(0.3, 1.0, 0), (0.3, 0.5, 0), (0.3, 0.9, 0.05)])
+        node = self.collision(mesh, long=True)
+        for side, x in (("left", 0), ("right", 10)):
+            cmds.setAttr(node + "." + side + "HeelMatrix", *matrix(x, 1), type="matrix")
+        self.set_profile(node, kneeRadiusX=0.7, kneeRadiusZ=0.7, ankleRadiusX=0.5, ankleRadiusZ=0.5, endFade=0)
+        points = self.points(mesh)
+        self.assertAlmostEqual(points[0][0], 0.5, delta=1e-6)
+        self.assertTrue(all(math.isfinite(value) for point in points for value in point))
+
+    def test_leg_profile_length_scale_moves_sampling(self):
+        mesh = self.mesh([(0.2, 0.5, 0), (0.2, 0.75, 0), (0.2, 1, 0)])
+        node = self.collision(mesh)
+        self.set_profile(node, thighRadiusX=1.2, thighRadiusZ=1.2, kneeRadiusX=0.7, kneeRadiusZ=0.7)
+        expected = self.points(mesh)
+        cmds.setAttr(node + ".ringScale1", 2)
+        self.assert_points_close(self.points(mesh), expected)
 
     def test_wave_zero_paths_and_default_impulse(self):
         mesh = self.mesh([(1, 0.2, 0.1), (0.7, 0.5, 0.5), (0.1, 1, 1)])
@@ -166,6 +378,11 @@ class DeformerTests(unittest.TestCase):
         for point, reference in zip(actual, expected):
             for value, target in zip(point, reference):
                 self.assertAlmostEqual(value, target, delta=tolerance)
+
+    def assert_values_close(self, actual, expected, tolerance=1e-6):
+        self.assertEqual(len(actual), len(expected))
+        for value, target in zip(actual, expected):
+            self.assertAlmostEqual(value, target, delta=tolerance)
 
     def set_wave_values(self, node, **values):
         for name, value in values.items():
@@ -248,6 +465,178 @@ class DeformerTests(unittest.TestCase):
                         reference_delta = local_delta / scale
                     else:
                         self.assertAlmostEqual(local_delta / scale, reference_delta, delta=1e-6)
+
+    def rotation_matrix(self, x=0, y=0, z=0):
+        return list(om.MEulerRotation(x, y, z).asMatrix())
+
+    def set_rotation(self, node, values):
+        cmds.setAttr(node + ".evaluationToWorldRotation", *values, type="matrix")
+
+    def directional_wave(self, mesh):
+        node = self.wave(mesh)
+        self.set_wave_values(node, idleAmplitudeU=0, idleDirectionality=1, idleComplexity=0, waveCountV=0)
+        return node
+
+    def test_wave_rotation_attribute_contract(self):
+        node = cmds.createNode("yddSkirtWaveDeformer")
+        name = "evaluationToWorldRotation"
+        self.assertEqual(cmds.attributeQuery(name, node=node, shortName=True), "etwr")
+        self.assertEqual(cmds.getAttr(node + "." + name), matrix())
+        self.assertTrue(cmds.attributeQuery(name, node=node, hidden=True))
+        self.assertTrue(cmds.attributeQuery(name, node=node, storable=True))
+        self.assertTrue(cmds.attributeQuery(name, node=node, connectable=True))
+        self.assertFalse(cmds.attributeQuery(name, node=node, keyable=True))
+        source = cmds.createNode("transform")
+        cmds.connectAttr(source + ".matrix", node + "." + name)
+        self.assertEqual(cmds.listConnections(node + "." + name, source=True, destination=False), [source])
+        cmds.setAttr(source + ".rotateY", 30)
+        self.assertNotEqual(cmds.getAttr(node + "." + name), matrix())
+
+    def test_wave_rotation_identity_default_and_rotated_direction_equivalence(self):
+        mesh = self.mesh([(1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1), (0.6, 0.5, -0.8)])
+        original = self.points(mesh)
+        node = self.directional_wave(mesh)
+        baseline = self.points(mesh)
+        self.assertNotEqual(baseline, original)
+        self.set_rotation(node, matrix())
+        self.assertEqual(self.points(mesh), baseline)
+        for angle in [math.radians(30), math.pi / 2, math.radians(137)]:
+            with self.subTest(angle=angle):
+                rotation = om.MEulerRotation(0, angle, 0).asMatrix()
+                self.set_wave_values(node, idleDirectionX=-1, idleDirectionZ=0)
+                self.set_rotation(node, list(rotation))
+                rotated = self.points(mesh)
+                self.assertNotEqual(rotated, baseline)
+                expected_direction = om.MVector(-1, 0, 0) * rotation.inverse()
+                self.set_rotation(node, matrix())
+                self.set_wave_values(node, idleDirectionX=expected_direction.x, idleDirectionZ=expected_direction.z)
+                self.assert_points_close(rotated, self.points(mesh), tolerance=1e-9)
+        # impulse keeps its input strength through the rotation
+        self.set_wave_values(
+            node, idleAmplitude=0, impulseAmount=1, impulseX=-0.5, impulseZ=0.25, impulsePosition=0.5, directionality=0.7
+        )
+        self.set_rotation(node, matrix())
+        impulse_baseline = self.points(mesh)
+        self.assertNotEqual(impulse_baseline, original)
+        rotation = om.MEulerRotation(0, math.radians(75), 0).asMatrix()
+        self.set_rotation(node, list(rotation))
+        rotated = self.points(mesh)
+        self.assertNotEqual(rotated, impulse_baseline)
+        expected_impulse = om.MVector(-0.5, 0, 0.25) * rotation.inverse()
+        self.set_rotation(node, matrix())
+        self.set_wave_values(node, impulseX=expected_impulse.x, impulseZ=expected_impulse.z)
+        self.assert_points_close(rotated, self.points(mesh), tolerance=1e-9)
+
+    def test_wave_rotation_tilt_keeps_y_and_projects_without_renormalizing(self):
+        mesh = self.mesh([(0, 1, 1), (0, 1, -1), (1, 1, 0), (-1, 1, 0)])
+        original = self.points(mesh)
+        node = self.directional_wave(mesh)
+        self.set_wave_values(node, idleDirectionX=0, idleDirectionZ=1)
+        reference = self.points(mesh)
+        reference_delta = distance(reference[0], original[0])
+        self.assertGreater(reference_delta, 0.01)
+        for angle in [math.radians(45), math.radians(60), math.pi / 2]:
+            with self.subTest(angle=angle):
+                self.set_rotation(node, self.rotation_matrix(x=angle))
+                tilted = self.points(mesh)
+                self.assertAlmostEqual(distance(tilted[0], original[0]), reference_delta * abs(math.cos(angle)), delta=1e-6)
+                self.assertEqual(tilted[2:], original[2:])
+        self.assert_points_close(self.points(mesh), original)
+
+    def test_wave_rotation_bell_local_ignores_rotation(self):
+        mesh = self.mesh([(1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1)])
+        node = self.directional_wave(mesh)
+        self.set_wave_values(node, idleDirectionSpace=1, impulseSpace=1, impulseAmount=1, impulseX=-0.5, impulsePosition=0.5)
+        local = self.points(mesh)
+        for values in [self.rotation_matrix(y=1.0), [2 if i in (0, 5, 10) else 0 for i in range(16)], [float("nan")] * 16]:
+            self.set_rotation(node, values)
+            self.assertEqual(self.points(mesh), local)
+        self.set_wave_values(node, idleDirectionSpace=0)
+        self.assertNotEqual(self.points(mesh), local)
+
+    def test_wave_rotation_invalid_passthrough_and_recovery(self):
+        mesh = self.mesh([(1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1)])
+        original = self.points(mesh)
+        node = self.directional_wave(mesh)
+        baseline = self.points(mesh)
+        self.assertNotEqual(baseline, original)
+        uniform = [2 if i in (0, 5, 10) else 0 for i in range(16)]
+        uniform[15] = 1
+        shear = matrix()
+        shear[4] = 0.01
+        reflection = matrix()
+        reflection[0] = -1
+        translated = matrix(x=1e-3)
+        perspective = matrix()
+        perspective[3] = 1e-3
+        homogeneous = matrix()
+        homogeneous[15] = 1 + 1e-6
+        nonfinite = matrix()
+        nonfinite[5] = float("nan")
+        infinite = matrix()
+        infinite[12] = float("inf")
+        slightly_scaled = matrix()
+        slightly_scaled[0] = 1 + 5e-6
+        invalid = {
+            "uniform_scale": uniform,
+            "shear": shear,
+            "reflection": reflection,
+            "translation": translated,
+            "perspective": perspective,
+            "homogeneous": homogeneous,
+            "nan": nonfinite,
+            "inf": infinite,
+            "slightly_scaled": slightly_scaled,
+        }
+        for label, values in invalid.items():
+            with self.subTest(matrix=label):
+                self.set_rotation(node, values)
+                self.assertEqual(self.points(mesh), original)
+                self.set_rotation(node, matrix())
+                self.assertEqual(self.points(mesh), baseline)
+        within = self.rotation_matrix(y=0.3)
+        within[0] += 2e-7
+        within[12] = 5e-9
+        self.set_rotation(node, within)
+        self.assertNotEqual(self.points(mesh), original)
+        self.assertNotEqual(self.points(mesh), baseline)
+        self.set_rotation(node, matrix(x=1e-7))
+        self.assertEqual(self.points(mesh), original)
+
+    def test_wave_rotation_survives_save_and_reload(self):
+        import os
+        import tempfile
+
+        mesh = self.mesh([(1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1)])
+        node = self.directional_wave(mesh)
+        rotation = self.rotation_matrix(y=math.radians(40))
+        self.set_rotation(node, rotation)
+        expected = self.points(mesh)
+        source = cmds.createNode("transform", name="rotationSource")
+        cmds.setAttr(source + ".rotateY", 40)
+        connected = cmds.createNode("yddSkirtWaveDeformer", name="connectedWave")
+        cmds.connectAttr(source + ".matrix", connected + ".evaluationToWorldRotation")
+        directory = tempfile.mkdtemp()
+        try:
+            for extension, file_type in [("ma", "mayaAscii"), ("mb", "mayaBinary")]:
+                with self.subTest(extension=extension):
+                    path = os.path.join(directory, "rotation." + extension).replace(os.sep, "/")
+                    cmds.file(rename=path)
+                    cmds.file(save=True, force=True, type=file_type)
+                    cmds.file(new=True, force=True)
+                    cmds.file(path, open=True, force=True)
+                    self.assert_values_close(cmds.getAttr(node + ".evaluationToWorldRotation"), rotation, tolerance=1e-12)
+                    self.assert_points_close(self.points(mesh), expected, tolerance=1e-12)
+                    self.assertEqual(
+                        cmds.listConnections(connected + ".evaluationToWorldRotation", source=True, destination=False), [source]
+                    )
+            cmds.file(new=True, force=True)
+            fresh = cmds.createNode("yddSkirtWaveDeformer")
+            self.assertEqual(cmds.getAttr(fresh + ".evaluationToWorldRotation"), matrix())
+        finally:
+            for name in os.listdir(directory):
+                os.remove(os.path.join(directory, name))
+            os.rmdir(directory)
 
     def test_wave_independent_gains_and_phases(self):
         mesh = self.mesh([(1, 0.2, 0.1), (0.7, 0.5, 0.5), (0.1, 1, 1)])
@@ -403,3 +792,37 @@ class DeformerTests(unittest.TestCase):
                 self.assert_points_close(self.points(mesh), references[time])
         finally:
             cmds.evaluationManager(mode="off")
+
+    def assert_geometry_transform_invariance(self, mesh, node, baseline):
+        for label, values in (
+            ("translation", ((4, -3, 2), (0, 0, 0), 1.0, None)),
+            ("rotation", ((0, 0, 0), (21, -17, 9), 1.0, None)),
+            ("scale", ((0, 0, 0), (0, 0, 0), 1.7, None)),
+            ("opm", ((0, 0, 0), (0, 0, 0), 1.0, self.transform_matrix((1.2, -0.7, 2.1), (17, -23, 11), 1.3))),
+        ):
+            with self.subTest(transform=label):
+                cmds.setAttr(mesh + ".translate", *values[0], type="double3")
+                cmds.setAttr(mesh + ".rotate", *values[1], type="double3")
+                cmds.setAttr(mesh + ".scale", values[2], values[2], values[2], type="double3")
+                cmds.setAttr(mesh + ".offsetParentMatrix", *(values[3] or matrix()), type="matrix")
+                cmds.dgdirty(node)
+                self.assertEqual(self.points(mesh), baseline)
+                self.assert_world_is_one_transform(mesh, baseline)
+
+    def test_collision_object_space_is_invariant_under_geometry_transform(self):
+        mesh = self.mesh([(0.25, 0.2, 0), (0.25, 1, 0), (0.1, 0.5, 0.4)])
+        original = self.points(mesh)
+        node = self.collision(mesh)
+        baseline = self.points(mesh)
+        self.assertNotEqual(baseline, original)
+        self.assert_geometry_transform_invariance(mesh, node, baseline)
+
+    def test_wave_bell_local_object_space_is_invariant_under_geometry_transform(self):
+        mesh = self.mesh([(1, 0.3, 0), (-1, 0.3, 0), (0, 1, 1), (0, 1, -1)])
+        original = self.points(mesh)
+        node = self.wave(mesh)
+        self.set_wave_values(node, idleAmplitudeU=0, idleDirectionality=1, idleDirectionSpace=1, impulseSpace=1)
+        cmds.setAttr(node + ".evaluationToWorldRotation", *matrix(), type="matrix")
+        baseline = self.points(mesh)
+        self.assertNotEqual(baseline, original)
+        self.assert_geometry_transform_invariance(mesh, node, baseline)

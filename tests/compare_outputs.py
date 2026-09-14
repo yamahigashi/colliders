@@ -55,11 +55,21 @@ def capture(plugin):
                 cmds.setAttr(node + "." + attr, value)
             rows.append(sample(dict(group="smoothing", attributes=attrs), node, "outputSurface", "surface"))
         for mode in ("off", "serial", "parallel"):
-            for condition in ("active", "amplitude0", "envelope0", "signals0", "impulse_only", "periodic_only", "noise_only"):
+            for condition in (
+                "active",
+                "amplitude0",
+                "envelope0",
+                "signals0",
+                "impulse_only",
+                "periodic_only",
+                "noise_only",
+            ):
                 for complexity in (0, 0.35, 1):
                     cmds.file(new=True, force=True)
                     cmds.evaluationManager(mode=mode)
-                    obj = cmds.polyCylinder(radius=1, height=4, subdivisionsX=12, subdivisionsY=4, constructionHistory=False)[0]
+                    obj = cmds.polyCylinder(
+                        radius=1, height=4, subdivisionsX=12, subdivisionsY=4, constructionHistory=False
+                    )[0]
                     cmds.move(0, 2, 0, obj + ".vtx[*]", relative=True, objectSpace=True)
                     node = cmds.deformer(obj, type="yddSkirtWaveDeformer")[0]
                     attrs = wave_settings(node, condition)
@@ -95,7 +105,11 @@ def capture(plugin):
             if zero_weight:
                 cmds.percent(node, shape + ".vtx[2]", value=0)
             rows.append(
-                sample(dict(group="highest_vertex_weight", zero_weight=zero_weight, attributes=attrs), node, "outputGeometry[0]")
+                sample(
+                    dict(group="highest_vertex_weight", zero_weight=zero_weight, attributes=attrs),
+                    node,
+                    "outputGeometry[0]",
+                )
             )
         for scale in ((0.4, 1.5, 0.4), (2, 1.5, 2)):
             for y in (0, 10):
@@ -107,7 +121,31 @@ def capture(plugin):
                 cmds.connectAttr(ring + ".worldMatrix[0]", node + ".ringMatrix[0]")
                 rows.append(
                     sample(
-                        dict(group="U1", translation=y, scale=scale, known_fix="Translation invariance"), node, "outputBellMesh"
+                        dict(group="U1", translation=y, scale=scale, known_fix="Translation invariance"),
+                        node,
+                        "outputBellMesh",
+                    )
+                )
+        for skirt_type in (0, 1):
+            for falloff in (0, 0.2):
+                cmds.file(new=True, force=True)
+                points = [(0.25, y, z) for y, z in [(0.05, 0), (0.5, 0.2), (1, 0), (1.5, 0.1), (2.1, 0)]]
+                points.extend([(1.1, 0.5, 0), (0.1, 0.75, 1.05)])
+                mesh = om.MFnMesh().create([om.MPoint(*p) for p in points], [len(points)], list(range(len(points))))
+                shape = om.MFnDagNode(mesh).fullPathName()
+                node = cmds.deformer(shape, type="yddSkirtCollideDeformer")[0]
+                for side, x in (("left", 0), ("right", 10)):
+                    for joint, y in (("Hip", 0), ("Knee", 1), ("Heel", 2)):
+                        guide = transform((x, y, 0))
+                        cmds.connectAttr(guide + ".worldMatrix[0]", node + "." + side + joint + "Matrix")
+                    cmds.setAttr(node + "." + side + "RingAxis", 1)
+                cmds.setAttr(node + ".ringScale", 1, 1, 1, type="double3")
+                attrs = dict(skirtType=skirt_type, falloff=falloff, endFade=0.1, collision=1)
+                for name, value in attrs.items():
+                    cmds.setAttr(node + "." + name, value)
+                rows.append(
+                    sample(
+                        dict(group="leg_collision", attributes=attrs, input_points=points), node, "outputGeometry[0]"
                     )
                 )
         return dict(metadata=metadata, cases=rows)
@@ -127,7 +165,12 @@ def compare(left, right, tolerance):
             raise ValueError(f"Non-finite coordinates in {a['case']}")
         delta = max((abs(x - y) for p, q in zip(a["points"], b["points"]) for x, y in zip(p, q)), default=0)
         results.append(
-            dict(case=a["case"], exact=a["sha256"] == b["sha256"], max_absolute_delta=delta, within_tolerance=delta <= tolerance)
+            dict(
+                case=a["case"],
+                exact=a["sha256"] == b["sha256"],
+                max_absolute_delta=delta,
+                within_tolerance=delta <= tolerance,
+            )
         )
     return dict(
         tolerance=tolerance,

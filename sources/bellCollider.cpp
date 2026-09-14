@@ -31,6 +31,7 @@
 #include <tbb/parallel_for.h>
 
 #include "bellCollider.h"
+#include "colliderInputValidation.h"
 #include "pluginIdentity.h"
 #include "utils.hpp"
 
@@ -60,6 +61,12 @@ MStatus BellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
 
     // Extract inputs
     BellColliderInputs inputs;
+    inputs.bellSubdivision = dataBlock.inputValue(attr_bellSubdivision).asInt();
+    if (!ColliderInput::validSubdivision(inputs.bellSubdivision))
+    {
+        MGlobal::displayError("BellCollider: bellSubdivision must be between 3 and 4096.");
+        return MS::kInvalidParameter;
+    }
     inputs.bellMatrix = dataBlock.inputValue(attr_bellMatrix).asMatrix();
     
     MStatus stat;
@@ -77,7 +84,6 @@ MStatus BellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
         inputs.rings.emplace_back(ringValue.asMatrix());
     }
 
-    inputs.bellSubdivision = dataBlock.inputValue(attr_bellSubdivision).asInt();
     const float bottomRadius = dataBlock.inputValue(attr_bellBottomRadius).asFloat();
     inputs.falloff = dataBlock.inputValue(attr_falloff).asFloat();
     inputs.collision = dataBlock.inputValue(attr_collision).asFloat();
@@ -116,12 +122,14 @@ MStatus BellCollider::initialize()
     addAttribute(attr_ringMatrix);
 
     attr_bellSubdivision = nAttr.create("bellSubdivision", "bellSubdivision", MFnNumericData::kInt, 16);
-    nAttr.setMin(3);
+    nAttr.setMin(ColliderInput::kMinSubdivision);
+    nAttr.setMax(ColliderInput::kMaxSubdivision);
     nAttr.setKeyable(true);
     addAttribute(attr_bellSubdivision);
 
     attr_ringSubdivision = nAttr.create("ringSubdivision", "ringSubdivision", MFnNumericData::kInt, 16);
-    nAttr.setMin(3);
+    nAttr.setMin(ColliderInput::kMinSubdivision);
+    nAttr.setMax(ColliderInput::kMaxSubdivision);
     nAttr.setKeyable(true);
     addAttribute(attr_ringSubdivision);
 
