@@ -25,6 +25,9 @@ set(sources
   sources/skirtCollideDeformer.h
   sources/skirtWaveDeformer.cpp
   sources/skirtWaveDeformer.h
+  sources/nurbsRefitKernel.h
+  sources/skirtSurfaceFit.cpp
+  sources/skirtSurfaceFit.h
   sources/utils.hpp)
 
 add_library(yddColliders SHARED ${sources})

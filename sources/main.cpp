@@ -6,6 +6,7 @@
 #include "skirtBellCollider.h"
 #include "skirtCollideDeformer.h"
 #include "skirtWaveDeformer.h"
+#include "skirtSurfaceFit.h"
 
 MStatus initializePlugin(MObject plugin)
 {
@@ -36,6 +37,9 @@ MStatus initializePlugin(MObject plugin)
 	stat = pluginFn.registerNode(PluginIdentity::kSkirtWaveNodeName, SkirtWaveDeformer::typeId, SkirtWaveDeformer::creator, SkirtWaveDeformer::initialize, MPxNode::kDeformerNode);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
+	stat = pluginFn.registerNode(PluginIdentity::kSkirtSurfaceFitNodeName, SkirtSurfaceFit::typeId, SkirtSurfaceFit::creator, SkirtSurfaceFit::initialize, MPxNode::kDependNode);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
 	return MS::kSuccess;
 }
 
@@ -45,16 +49,13 @@ MStatus uninitializePlugin(MObject plugin)
 
 	MFnPlugin pluginFn(plugin);
 
-	stat = MHWRender::MDrawRegistry::deregisterDrawOverrideCreator(BellCollider::drawDbClassification, BellCollider::drawRegistrantId);
+	stat = pluginFn.deregisterNode(SkirtSurfaceFit::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
-	stat = pluginFn.deregisterNode(BellCollider::typeId);
+	stat = pluginFn.deregisterNode(SkirtWaveDeformer::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
-	stat = MHWRender::MDrawRegistry::deregisterDrawOverrideCreator(PlaneCollider::drawDbClassification, PlaneCollider::drawRegistrantId);
-	CHECK_MSTATUS_AND_RETURN_IT(stat);
-
-	stat = pluginFn.deregisterNode(PlaneCollider::typeId);
+	stat = pluginFn.deregisterNode(SkirtCollideDeformer::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	stat = MHWRender::MDrawRegistry::deregisterDrawOverrideCreator(SkirtBellCollider::drawDbClassification, SkirtBellCollider::drawRegistrantId);
@@ -63,10 +64,16 @@ MStatus uninitializePlugin(MObject plugin)
 	stat = pluginFn.deregisterNode(SkirtBellCollider::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
-	stat = pluginFn.deregisterNode(SkirtWaveDeformer::typeId);
+	stat = MHWRender::MDrawRegistry::deregisterDrawOverrideCreator(PlaneCollider::drawDbClassification, PlaneCollider::drawRegistrantId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
-	stat = pluginFn.deregisterNode(SkirtCollideDeformer::typeId);
+	stat = pluginFn.deregisterNode(PlaneCollider::typeId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = MHWRender::MDrawRegistry::deregisterDrawOverrideCreator(BellCollider::drawDbClassification, BellCollider::drawRegistrantId);
+	CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+	stat = pluginFn.deregisterNode(BellCollider::typeId);
 	CHECK_MSTATUS_AND_RETURN_IT(stat);
 
 	return MS::kSuccess;

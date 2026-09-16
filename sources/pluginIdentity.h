@@ -4,7 +4,7 @@
 namespace PluginIdentity
 {
 constexpr char kVendor[] = "yamahigashi";
-constexpr char kVersion[] = "4.0.0";
+constexpr char kVersion[] = "4.1.0";
 constexpr char kDrawRegistrant[] = "yddCollidersPlugin";
 constexpr char kBellNodeName[] = "yddBellCollider";
 constexpr unsigned int kBellTypeId = 0x0007DD00;
@@ -16,4 +16,6 @@ constexpr char kSkirtCollideNodeName[] = "yddSkirtCollideDeformer";
 constexpr unsigned int kSkirtCollideTypeId = 0x0007DD03;
 constexpr char kSkirtWaveNodeName[] = "yddSkirtWaveDeformer";
 constexpr unsigned int kSkirtWaveTypeId = 0x0007DD04;
+constexpr char kSkirtSurfaceFitNodeName[] = "yddSkirtSurfaceFit";
+constexpr unsigned int kSkirtSurfaceFitTypeId = 0x0007DD05;
 }
