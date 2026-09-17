@@ -4,7 +4,7 @@
 namespace PluginIdentity
 {
 constexpr char kVendor[] = "yamahigashi";
-constexpr char kVersion[] = "4.1.0";
+constexpr char kVersion[] = "4.2.0";
 constexpr char kDrawRegistrant[] = "yddCollidersPlugin";
 constexpr char kBellNodeName[] = "yddBellCollider";
 constexpr unsigned int kBellTypeId = 0x0007DD00;

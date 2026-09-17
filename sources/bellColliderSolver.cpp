@@ -144,7 +144,7 @@ BellColliderRelax::Vector<Ops> broadcast(double x, double y, double z)
 }
 
 template <class Ops>
-BellColliderRelax::Ring<Ops> prepareRelaxRing(const PreparedBellRing &ring, double collision)
+BellColliderRelax::Ring<Ops> prepareRelaxRing(const PreparedBellRing &ring, double collision, bool capAtRingOrigin)
 {
     MPoint origin = ring.plane.orig;
     MPoint translation = ring.translation;
@@ -160,6 +160,7 @@ BellColliderRelax::Ring<Ops> prepareRelaxRing(const PreparedBellRing &ring, doub
         result.inverseColumns[column] = broadcast<Ops>(ring.inverse[0][column], ring.inverse[1][column],
                                                        ring.inverse[2][column]);
     result.collision = Ops::splat(collision);
+    result.capAtRingOrigin = capAtRingOrigin;
     return result;
 }
 
@@ -173,13 +174,13 @@ MPoint cartesianPoint(const MPoint &point)
 } // namespace
 
 void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
-                                                 int startIndex, int count)
+                                                 int startIndex, int count, bool capAtRingOrigin)
 {
     if (!(collision > 1e-5))
         return;
 
 #ifdef YDD_RELAX_SSE2
-    const auto prepared = prepareRelaxRing<BellColliderRelax::Pair>(ring, collision);
+    const auto prepared = prepareRelaxRing<BellColliderRelax::Pair>(ring, collision, capAtRingOrigin);
     for (int j = startIndex; j < startIndex + count; j += 2)
     {
         const int second = j + 1 < startIndex + count ? j + 1 : j;
@@ -203,7 +204,7 @@ void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const Prep
         }
     }
 #else
-    const auto prepared = prepareRelaxRing<BellColliderRelax::Scalar>(ring, collision);
+    const auto prepared = prepareRelaxRing<BellColliderRelax::Scalar>(ring, collision, capAtRingOrigin);
     for (int j = startIndex; j < startIndex + count; ++j)
     {
         MPoint &point = points[j];
@@ -344,7 +345,7 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const st
         }
 
         relaxTowardRingBoundary(bellPoints, ring, inputs.collision, bellSubdivision + 1,
-                                (int)bellPoints.length() - bellSubdivision - 1);
+                                (int)bellPoints.length() - bellSubdivision - 1, inputs.capAtRingOrigin);
 
         bellPointsList.push_back(bellPoints);
     }
@@ -396,6 +397,27 @@ void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointA
     }
 }
 
+void BellColliderSolver::smoothDisplacements(vector<MVector> &displacements, double smoothness)
+{
+    const int count = static_cast<int>(displacements.size());
+    const double alpha = smoothness * 0.5;
+    if (alpha != 0.0)
+    {
+        vector<MVector> smoothedDisplacements(count);
+        for (int iteration = 0; iteration < 3; iteration++)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                const int previous = (i + count - 1) % count;
+                const int next = (i + 1) % count;
+                smoothedDisplacements[i] = displacements[i] * (1.0 - alpha)
+                    + (displacements[previous] + displacements[next]) * (alpha * 0.5);
+            }
+            displacements.swap(smoothedDisplacements);
+        }
+    }
+}
+
 MStatus BellColliderSolver::solve(const BellColliderInputs &inputs, const MPointArray &baseBellPoints,
                                   BellColliderOutputs &outputs)
 {
@@ -443,28 +465,14 @@ MStatus BellColliderSolver::solve(const BellColliderInputs &inputs, const MPoint
         for (int i = 0; i < bellSubdivision; i++)
             displacements[i] += meanDisplacement * inputs.followGain;
 
-        const double alpha = inputs.smoothness * 0.5;
-        if (alpha != 0.0)
-        {
-            vector<MVector> smoothedDisplacements(bellSubdivision);
-            for (int iteration = 0; iteration < 3; iteration++)
-            {
-                for (int i = 0; i < bellSubdivision; i++)
-                {
-                    const int previous = (i + bellSubdivision - 1) % bellSubdivision;
-                    const int next = (i + 1) % bellSubdivision;
-                    smoothedDisplacements[i] = displacements[i] * (1.0 - alpha)
-                        + (displacements[previous] + displacements[next]) * (alpha * 0.5);
-                }
-                displacements.swap(smoothedDisplacements);
-            }
-        }
+        smoothDisplacements(displacements, inputs.smoothness);
 
         for (int i = 0; i < bellSubdivision; i++)
             outBellPoints.set(baseBellPoints[startIndex + i] + displacements[i], startIndex + i);
 
         for (const auto &ring : inputs.rings)
-            relaxTowardRingBoundary(outBellPoints, ring, inputs.collision, startIndex, bellSubdivision);
+            relaxTowardRingBoundary(outBellPoints, ring, inputs.collision, startIndex, bellSubdivision,
+                                    inputs.capAtRingOrigin);
     }
 
     outputs.points = outBellPoints;

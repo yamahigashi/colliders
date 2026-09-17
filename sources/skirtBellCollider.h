@@ -55,7 +55,6 @@ public:
     static MObject attr_bellSubdivision;
     static MObject attr_ringSubdivision;
     static MObject attr_falloff;
-    static MObject attr_collision;
     static MObject attr_tightness;
     static MObject attr_smoothness;
     static MObject attr_follow;

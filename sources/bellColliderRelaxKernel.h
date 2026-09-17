@@ -132,6 +132,7 @@ template <class Ops> struct Ring
     using Value = typename Ops::Value;
     Vector<Ops> origin, normal, translation, inverseColumns[3];
     Value collision;
+    bool capAtRingOrigin = false;
 };
 
 // Cartesian input is separate from raw output: MPoint += MVector preserves w.
@@ -158,7 +159,9 @@ inline Vector<Ops> relax(const Vector<Ops> &raw, const Vector<Ops> &cartesian, c
     // Keep reciprocal followed by multiplication, rather than x / length.
     const Vector<Ops> normal = vector * Ops::div(one, Ops::select(nonzero, length, one));
     const Value projectedLength = (normal * delta).length();
-    const auto push = Ops::both(nonzero, Ops::greater(projectedLength, length));
+    auto push = Ops::both(nonzero, Ops::greater(projectedLength, length));
+    if (ring.capAtRingOrigin)
+        push = Ops::both(push, Ops::greater(distance, Ops::splat(0.0)));
     if (!Ops::any(push))
         return raw;
 

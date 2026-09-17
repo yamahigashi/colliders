@@ -45,6 +45,7 @@ struct BellColliderInputs
     int bellSubdivision = 16;
     float falloff = 0.0f;
     float collision = 0.0f;
+    bool capAtRingOrigin = false;
     double smoothness = 0.0;
     double followGain = 0.0;
 };
@@ -68,7 +69,8 @@ public:
   static bool collisionPoints(const MMatrix &bellMatrix, const MMatrix &bellInverse, const Plane &bellPlane,
                               const PreparedBellRing &ring, MPoint &bellPoint, MPoint &ringPoint, MPoint &linePoint);
   static void relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
-                                      int startIndex, int count);
+                                      int startIndex, int count, bool capAtRingOrigin = false);
+  static void smoothDisplacements(std::vector<MVector> &displacements, double smoothness);
   static MStatus solve(const BellColliderInputs &inputs, const MPointArray &baseBellPoints,
                        BellColliderOutputs &outputs);
 
