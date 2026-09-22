@@ -166,6 +166,42 @@ double support(const Cylinder& cylinder, const MVector& normal)
     return normal * MVector(cylinder.origin) + result;
 }
 
+// Radial depth of a point inside the cylinder: 0 on or outside the side
+// surface, approaching 1 near the axis. The axial part of the constraint
+// normal is scaled by it so that a point outside the side surface (for
+// example next to the knee rim) is constrained by the side plane only, instead
+// of being pushed along the leg through a cap plane it never crossed.
+double radialDepth(const Cylinder& cylinder, const MPoint& point)
+{
+    const MVector offset = point - cylinder.origin;
+    const double z = offset * cylinder.axis;
+    const MVector radial = offset - z * cylinder.axis;
+    const double radius = radial.length();
+    const MVector direction = radius < 1e-8 ? cylinder.x : radial / radius;
+    Station section = cylinder.stations.back();
+    if (z <= cylinder.stations.front().z)
+        section = cylinder.stations.front();
+    else
+    {
+        for (std::size_t j = 1; j < cylinder.stations.size(); j++)
+        {
+            const Station& first = cylinder.stations[j - 1];
+            const Station& second = cylinder.stations[j];
+            if (z <= second.z)
+            {
+                const double t = (z - first.z) / (second.z - first.z);
+                section.radiusX = first.radiusX + t * (second.radiusX - first.radiusX);
+                section.radiusZ = first.radiusZ + t * (second.radiusZ - first.radiusZ);
+                break;
+            }
+        }
+    }
+    const double surfaceRadius = radialSupport(cylinder, section, direction);
+    if (surfaceRadius < 1e-8)
+        return 0.0;
+    return (std::max)(0.0, (std::min)(1.0, 1.0 - radius / surfaceRadius));
+}
+
 double activationWeight(const Cylinder& cylinder, const MPoint& point, double falloff)
 {
     const MVector offset = point - cylinder.origin;
@@ -235,9 +271,16 @@ bool pointConstraint(const CylinderPair& pair, const MPoint& restPoint, const MV
     else if (z >= current.length)
         constraint.normal = current.axis;
     else
-        constraint.normal =
-            (z * (current.length - z) * transported + clearance * (2.0 * z - current.length) * current.axis).normal();
-    constraint.distance = weight * (support(current, constraint.normal) - constraint.normal * MVector(point));
+        constraint.normal = (z * (current.length - z) * transported +
+                             clearance * radialDepth(current, point) * (2.0 * z - current.length) * current.axis)
+                                .normal();
+    // The activation weight fades the push of a violated plane in. A satisfied
+    // plane keeps its true clearance: scaling a negative clearance toward zero
+    // would tighten the plane as the weight vanishes, and a nearly opposite
+    // plane of another cylinder could then meet it in a thin wedge whose
+    // nearest point lies far away.
+    const double clearanceDistance = support(current, constraint.normal) - constraint.normal * MVector(point);
+    constraint.distance = clearanceDistance > 0.0 ? weight * clearanceDistance : clearanceDistance;
     return std::isfinite(constraint.distance);
 }
 
@@ -668,7 +711,8 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
         }
         if (upward > 0.0)
             constraints.push_back({up, upward});
-        const MPoint result = point + strength * minimumDisplacement(constraints);
+        const MVector displacement = minimumDisplacement(constraints);
+        const MPoint result = point + strength * displacement;
         if (isFinitePoint(result))
         {
             stat = iter.setPosition(result);

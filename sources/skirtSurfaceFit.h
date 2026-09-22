@@ -11,6 +11,7 @@ public:
     static MTypeId typeId;
     static MObject attr_inputSurface;
     static MObject attr_spansV;
+    static MObject attr_protectedVParameters;
     static MObject attr_outputSurface;
 
     static void* creator() { return new SkirtSurfaceFit(); }

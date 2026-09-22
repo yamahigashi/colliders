@@ -41,6 +41,8 @@ public:
     static MObject attr_noiseFrequencyU;
     static MObject attr_skew;
     static MObject attr_sharpness;
+    static MObject attr_heightNormalization;
+    static MObject attr_referenceHeight;
 
     SkirtWaveDeformer();
     virtual ~SkirtWaveDeformer() override {}

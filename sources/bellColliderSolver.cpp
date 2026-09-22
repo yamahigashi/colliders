@@ -7,6 +7,11 @@
 #include <maya/MIntArray.h>
 #include <maya/MDoubleArray.h>
 #include <cmath>
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <queue>
+#include <utility>
 
 #include "bellColliderSolver.h"
 #include "colliderInputValidation.h"
@@ -476,5 +481,656 @@ MStatus BellColliderSolver::solve(const BellColliderInputs &inputs, const MPoint
     }
 
     outputs.points = outBellPoints;
+    return MS::kSuccess;
+}
+
+namespace
+{
+bool validRowTopology(const BellRowTopology &topology, size_t count)
+{
+    if (topology.vertices.size() != count)
+        return false;
+    std::vector<bool> mapped(topology.outputCount, false);
+    std::vector<std::vector<int>> members(topology.components.size());
+    for (size_t i = 0; i < count; ++i)
+    {
+        const auto &vertex = topology.vertices[i];
+        if (!std::isfinite(vertex.materialU) || vertex.componentId < 0 ||
+            static_cast<size_t>(vertex.componentId) >= members.size() || vertex.previous < -1 || vertex.next < -1 ||
+            vertex.previous >= static_cast<int>(count) || vertex.next >= static_cast<int>(count) ||
+            vertex.side.bank < -1 || vertex.side.bank > 1 || (vertex.side.bank != 0 && vertex.side.seamIndex < 0) ||
+            vertex.outputDuplicates.empty())
+            return false;
+        for (unsigned int output : vertex.outputDuplicates)
+        {
+            if (output >= mapped.size() || mapped[output])
+                return false;
+            mapped[output] = true;
+        }
+        members[vertex.componentId].push_back(static_cast<int>(i));
+    }
+    for (bool present : mapped)
+        if (!present)
+            return false;
+    for (size_t c = 0; c < members.size(); ++c)
+    {
+        const auto &component = topology.components[c];
+        auto &indices = members[c];
+        std::sort(indices.begin(), indices.end(),
+                  [&](int a, int b) { return topology.vertices[a].materialU < topology.vertices[b].materialU; });
+        if (!std::isfinite(component.startU) || !std::isfinite(component.endU) || component.endU <= component.startU ||
+            indices.empty())
+            return false;
+        if (component.closed && (indices.size() < 2 || members.size() != 1 || component.endU != component.startU + 1.0))
+            return false;
+        for (size_t other = 0; other < c; ++other)
+            if ((std::max)(component.startU, topology.components[other].startU) <
+                (std::min)(component.endU, topology.components[other].endU))
+                return false;
+        for (size_t j = 0; j < indices.size(); ++j)
+        {
+            const auto &vertex = topology.vertices[indices[j]];
+            if (vertex.materialU < component.startU - 1e-9 || vertex.materialU > component.endU + 1e-9 ||
+                (j != 0 && vertex.materialU <= topology.vertices[indices[j - 1]].materialU))
+                return false;
+            const int previous = j != 0 ? indices[j - 1] : (component.closed ? indices.back() : -1);
+            const int next = j + 1 != indices.size() ? indices[j + 1] : (component.closed ? indices.front() : -1);
+            if (vertex.previous != previous || vertex.next != next || (component.closed && vertex.side.bank != 0) ||
+                (vertex.side.bank == -1 && previous != -1) || (vertex.side.bank == 1 && next != -1))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool finiteRowVectors(const std::vector<MVector> &values)
+{
+    for (const auto &value : values)
+        if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z))
+            return false;
+    return true;
+}
+
+bool finiteRowPoints(const MPointArray &points)
+{
+    for (unsigned int i = 0; i < points.length(); ++i)
+        if (!std::isfinite(points[i].x) || !std::isfinite(points[i].y) || !std::isfinite(points[i].z) ||
+            !std::isfinite(points[i].w))
+            return false;
+    return true;
+}
+
+bool validRowControls(const BellRowInputs &inputs)
+{
+    return std::isfinite(inputs.smoothness) && inputs.smoothness >= 0.0 && inputs.smoothness <= 1.0 &&
+           std::isfinite(inputs.followGain) && inputs.followGain >= 0.0 && std::isfinite(inputs.followRange) &&
+           inputs.followRange >= 0.0 && std::isfinite(inputs.contactBlendWidth) && inputs.contactBlendWidth >= 0.0;
+}
+
+void rowDistances(const BellRowTopology &topology, const std::vector<unsigned int> &seeds, double range,
+                  std::vector<double> &distances, std::vector<unsigned int> &touched)
+{
+    for (unsigned int index : touched)
+        distances[index] = std::numeric_limits<double>::infinity();
+    touched.clear();
+    typedef std::pair<double, unsigned int> Entry;
+    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> pending;
+    for (unsigned int seed : seeds)
+    {
+        if (distances[seed] == 0.0)
+            continue;
+        touched.push_back(seed);
+        distances[seed] = 0.0;
+        pending.push(Entry(0.0, seed));
+    }
+    while (!pending.empty())
+    {
+        const Entry current = pending.top();
+        pending.pop();
+        if (current.first > range)
+            break;
+        if (current.first != distances[current.second])
+            continue;
+        const auto &vertex = topology.vertices[current.second];
+        for (int direction = 0; direction != 2; ++direction)
+        {
+            const int neighbor = direction == 0 ? vertex.previous : vertex.next;
+            if (neighbor < 0)
+                continue;
+            const auto &other = topology.vertices[neighbor];
+            double length = std::abs(other.materialU - vertex.materialU);
+            if (topology.components[vertex.componentId].closed &&
+                ((direction == 0 && other.materialU > vertex.materialU) ||
+                 (direction == 1 && other.materialU < vertex.materialU)))
+                length =
+                    (std::min)(other.materialU, vertex.materialU) + 1.0 - (std::max)(other.materialU, vertex.materialU);
+            const double candidate = current.first + length;
+            if (candidate <= range && candidate < distances[neighbor])
+            {
+                if (!std::isfinite(distances[neighbor]))
+                    touched.push_back(static_cast<unsigned int>(neighbor));
+                distances[neighbor] = candidate;
+                pending.push(Entry(candidate, static_cast<unsigned int>(neighbor)));
+            }
+        }
+    }
+}
+
+double circularMaterialDistance(double a, double b)
+{
+    double x = a - b;
+    x -= std::floor(x);
+    return (std::min)(x, 1.0 - x);
+}
+
+// Per-component rotation weight. The ray from the bell centre through the
+// bell contact point of the ring (the same sphere hit that drives the rotation)
+// crosses the row polyline at a material position; every component whose
+// material interval contains that position keeps weight 1, and any other
+// component fades with the material distance from the position to its nearer
+// end, reaching exactly 0 at blendWidth. A seam crossing therefore moves the
+// lift between panels over blendWidth of material instead of in one step. The
+// bell centre is used because every row surrounds it, whereas a ring close to
+// or outside the row would see the CVs under magnified angles or miss the row.
+// Without a forward crossing only the seed's component rotates. With a single
+// component every weight is 1, so the caller never blends.
+std::vector<double> componentContactWeights(const BellRowTopology &topology, const std::vector<MVector> &offsets,
+                                            const MVector &direction, unsigned int seed, double blendWidth)
+{
+    std::vector<double> weights(topology.components.size(), 1.0);
+    if (topology.components.size() < 2)
+        return weights;
+    const auto cross = [](const MVector &a, const MVector &b) { return a.z * b.x - a.x * b.z; };
+    double nearest = std::numeric_limits<double>::infinity();
+    double contactU = 0.0;
+    for (size_t i = 0; i < offsets.size(); ++i)
+    {
+        const auto &vertex = topology.vertices[i];
+        if (vertex.next < 0)
+            continue;
+        const size_t j = static_cast<size_t>(vertex.next);
+        const double ci = cross(offsets[i], direction);
+        const double cj = cross(offsets[j], direction);
+        if ((ci == 0.0 && cj == 0.0) || !((ci >= 0.0 && cj <= 0.0) || (ci <= 0.0 && cj >= 0.0)))
+            continue;
+        MVector hit;
+        double u;
+        if (ci == 0.0)
+        {
+            hit = offsets[i];
+            u = vertex.materialU;
+        }
+        else if (cj == 0.0)
+        {
+            hit = offsets[j];
+            u = topology.vertices[j].materialU;
+        }
+        else
+        {
+            const double lambda = ci / (ci - cj);
+            hit = offsets[i] + (offsets[j] - offsets[i]) * lambda;
+            double span = topology.vertices[j].materialU - vertex.materialU;
+            if (span < 0.0)
+                span += 1.0;
+            u = vertex.materialU + span * lambda;
+        }
+        const double t = hit * direction;
+        if (t > 0.0 && t < nearest)
+        {
+            nearest = t;
+            contactU = u;
+        }
+    }
+    if (!std::isfinite(nearest))
+    {
+        std::fill(weights.begin(), weights.end(), 0.0);
+        weights[topology.vertices[seed].componentId] = 1.0;
+        return weights;
+    }
+    for (size_t c = 0; c < weights.size(); ++c)
+    {
+        const auto &component = topology.components[c];
+        double inside = contactU - component.startU;
+        inside -= std::floor(inside);
+        if (inside <= component.endU - component.startU)
+            continue;
+        weights[c] = 0.0;
+        const double lag = (std::min)(circularMaterialDistance(contactU, component.startU),
+                                      circularMaterialDistance(contactU, component.endU));
+        if (blendWidth <= 0.0 || lag >= blendWidth)
+            continue;
+        const double t = lag / blendWidth;
+        weights[c] = 1.0 - t * t * (3.0 - 2.0 * t);
+    }
+    return weights;
+}
+
+std::vector<unsigned int> rowContactSeeds(const BellRowInputs &inputs, const MPointArray &baseRow,
+                                          const BellRowTopology &topology, const PreparedBellRing &ring)
+{
+    const MMatrix inverse = inputs.bellMatrix.inverse();
+    const MVector axis = maxis(inputs.bellMatrix, 1);
+    const Plane plane(taxis(inputs.bellMatrix), axis.normal());
+    MPoint bellHit, ringHit, lineHit;
+    if (baseRow.length() == 0 || axis.length() <= 1e-5 ||
+        !BellColliderSolver::collisionPoints(inputs.bellMatrix, inverse, plane, ring, bellHit, ringHit, lineHit))
+        return {};
+    const double collisionDelta = (plane.distance(ringHit) - plane.distance(bellHit)) / axis.length();
+    if (!(collisionDelta < 0.0))
+        return {};
+    const MPoint ringProjection = plane.projectPoint(ring.translation) * inverse;
+    const MVector direction = (plane.projectVector(ring.direction) * inverse).normal();
+    unsigned int seed = 0;
+    double maximum = -std::numeric_limits<double>::infinity();
+    for (unsigned int i = 0; i < baseRow.length(); ++i)
+    {
+        const MPoint projection = plane.projectPoint(baseRow[i]);
+        const MVector offset = projection * inverse - ringProjection;
+        const double z = offset.normal() * direction;
+        if (z > maximum || (z == maximum && topology.vertices[i].materialU < topology.vertices[seed].materialU))
+        {
+            maximum = z;
+            seed = i;
+        }
+    }
+    return {seed};
+}
+} // namespace
+
+MStatus BellColliderSolver::smoothDisplacements(std::vector<MVector> &displacements, double smoothness,
+                                                const BellRowTopology &topology)
+{
+    if (!validRowTopology(topology, displacements.size()) || !finiteRowVectors(displacements) ||
+        !std::isfinite(smoothness) || smoothness < 0.0 || smoothness > 1.0)
+        return MS::kInvalidParameter;
+    if (smoothness == 0.0)
+        return MS::kSuccess;
+    const double alpha = smoothness / 2.0;
+    std::vector<MVector> next(displacements.size());
+    for (int iteration = 0; iteration < 3; ++iteration)
+    {
+        for (size_t i = 0; i < displacements.size(); ++i)
+        {
+            const auto &vertex = topology.vertices[i];
+            if (vertex.previous < 0 && vertex.next < 0)
+                next[i] = displacements[i];
+            else
+            {
+                const size_t previous = vertex.previous < 0 ? i : static_cast<size_t>(vertex.previous);
+                const size_t following = vertex.next < 0 ? i : static_cast<size_t>(vertex.next);
+                next[i] = displacements[i] * (1.0 - alpha) +
+                          (displacements[previous] + displacements[following]) * (alpha / 2.0);
+            }
+        }
+        displacements.swap(next);
+    }
+    return MS::kSuccess;
+}
+
+MStatus BellColliderSolver::computeLocalFollow(const std::vector<MVector> &directDisplacements,
+                                               const BellRowTopology &topology, const MMatrix &bellMatrix,
+                                               double followRange, std::vector<MVector> &follow)
+{
+    if (!validRowTopology(topology, directDisplacements.size()) || !finiteRowVectors(directDisplacements) ||
+        !std::isfinite(followRange) || followRange < 0.0)
+        return MS::kInvalidParameter;
+    std::vector<MVector> result(directDisplacements.size(), MVector(0, 0, 0));
+    std::vector<double> distances(result.size(), std::numeric_limits<double>::infinity());
+    std::vector<unsigned int> touched;
+    std::vector<size_t> order(result.size());
+    for (size_t i = 0; i < order.size(); ++i)
+        order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        const auto &left = topology.vertices[a];
+        const auto &right = topology.vertices[b];
+        if (left.materialU != right.materialU)
+            return left.materialU < right.materialU;
+        if (left.panelId != right.panelId)
+            return left.panelId < right.panelId;
+        return left.side.bank < right.side.bank;
+    });
+    const MVector axis = maxis(bellMatrix, 1);
+    if (axis.length() > 1e-5)
+    {
+        const MVector normal = axis.normal();
+        for (size_t i = 0; i < result.size(); ++i)
+        {
+            MVector value = directDisplacements[i];
+            if (followRange > 0.0)
+            {
+                rowDistances(topology, {static_cast<unsigned int>(i)}, followRange, distances, touched);
+                MVector sum(0, 0, 0);
+                double weight = 0.0;
+                for (size_t j : order)
+                    if (distances[j] <= followRange)
+                    {
+                        const double length = directDisplacements[j].length();
+                        sum += directDisplacements[j] * length;
+                        weight += length;
+                    }
+                if (weight < 1e-12)
+                    continue;
+                value = sum / weight;
+            }
+            result[i] = value - normal * (value * normal);
+        }
+    }
+    follow.swap(result);
+    return MS::kSuccess;
+}
+
+MStatus BellColliderSolver::deformPoints(const BellRowInputs &inputs, const MPointArray &baseRow,
+                                         const BellRowTopology &topology,
+                                         const std::vector<std::vector<unsigned int>> &ringSeeds,
+                                         std::vector<MPointArray> &ringPoints,
+                                         std::vector<std::vector<double>> *componentWeights)
+{
+    if (!validRowTopology(topology, baseRow.length()) || ringSeeds.size() != inputs.rings.size() ||
+        !finiteRowPoints(baseRow) || !validRowControls(inputs))
+        return MS::kInvalidParameter;
+    for (const auto &seeds : ringSeeds)
+    {
+        if (seeds.size() > 1)
+            return MS::kInvalidParameter;
+        for (unsigned int seed : seeds)
+            if (seed >= baseRow.length())
+                return MS::kInvalidParameter;
+    }
+    const MMatrix bellMatrix = inputs.bellMatrix;
+    const MMatrix bellMatrixInverse = bellMatrix.inverse();
+    const MPoint bell_translate = taxis(bellMatrix);
+    const MVector bellAxis = maxis(bellMatrix, 1);
+    const MVector bellNormal = bellAxis.normal();
+    const Plane bellPlane(bell_translate, bellNormal);
+    std::vector<MPointArray> result;
+    std::vector<std::vector<double>> weights(inputs.rings.size(),
+                                             std::vector<double>(topology.components.size(), 1.0));
+    for (size_t r = 0; r < inputs.rings.size(); ++r)
+    {
+        const auto &ring = inputs.rings[r];
+        MPointArray points = baseRow;
+        MPoint collisionPointBell, collisionPointRing, linePoint;
+        if (bellAxis.length() > 1e-5 && !ringSeeds[r].empty() &&
+            collisionPoints(bellMatrix, bellMatrixInverse, bellPlane, ring, collisionPointBell, collisionPointRing,
+                            linePoint))
+        {
+            const double collisionDelta =
+                (bellPlane.distance(collisionPointRing) - bellPlane.distance(collisionPointBell)) / bellAxis.length();
+            if (collisionDelta < 0.0)
+            {
+                const MPoint &ring_translate = ring.translation;
+                const MPoint ring_translate_proj = bellPlane.projectPoint(ring_translate);
+                const MVector ringDirection_proj = bellPlane.projectVector(ring.direction);
+                MTransformationMatrix rotationMatrixFn;
+                rotationMatrixFn.setTranslation(ring_translate, MSpace::kWorld);
+                const MMatrix rotateMatrixInverse = rotationMatrixFn.asMatrixInverse();
+                const MQuaternion quat(collisionPointBell - ring_translate, collisionPointRing - ring_translate);
+                rotationMatrixFn.rotateBy(quat, MSpace::kTransform);
+                const MMatrix rotateMatrix = rotationMatrixFn.asMatrix();
+                const Plane upperBellPlane(bell_translate + bellAxis, bellNormal);
+                const MPoint ring_translate_proj_bell = ring_translate_proj * bellMatrixInverse;
+                const MVector ringDirection_proj_bell = (ringDirection_proj * bellMatrixInverse).normal();
+                const MPointArray bellHits = findSphereLineIntersection(
+                    ring_translate_proj * bellMatrixInverse, ringDirection_proj * bellMatrixInverse, MPoint(0, 0, 0),
+                    1.001);
+                // collisionPoints succeeded with the same arguments, so a hit exists;
+                // an empty array would only mean the two call sites drifted apart.
+                const MVector contactRay = bellHits.length() ? MVector(bellHits[0]) : MVector(0, 0, 0);
+                std::vector<MVector> offsets(points.length());
+                for (unsigned int i = 0; i < points.length(); ++i)
+                    offsets[i] = MVector(bellPlane.projectPoint(points[i]) * bellMatrixInverse);
+                const std::vector<double> &componentWeights = weights[r] = componentContactWeights(
+                    topology, offsets, contactRay, ringSeeds[r][0], inputs.contactBlendWidth);
+                bool partial = false;
+                for (double componentWeight : componentWeights)
+                    partial = partial || (componentWeight > 0.0 && componentWeight < 1.0);
+                for (unsigned int i = 0; i < points.length(); ++i)
+                {
+                    if (componentWeights[topology.vertices[i].componentId] <= 0.0)
+                        continue;
+                    const MPoint bellPoint_proj = bellPlane.projectPoint(points[i]);
+                    const MVector offset_proj = bellPoint_proj * bellMatrixInverse - ring_translate_proj_bell;
+                    double weight = offset_proj.normal() * ringDirection_proj_bell;
+                    if (weight > inputs.falloff)
+                    {
+                        const double divisor = 1.0 - inputs.falloff;
+                        weight = divisor > 1e-5 ? (weight - inputs.falloff) / divisor : 1.0;
+                        if (inputs.smoothness > 0.0)
+                            weight = weight * weight * (3.0 - 2.0 * weight);
+                        const MPoint rp = points[i] * rotateMatrixInverse * rotateMatrix;
+                        MPoint p = rp;
+                        if (upperBellPlane.distance(rp) > 0)
+                            p = upperBellPlane.projectPoint(rp);
+                        points[i] = p * weight + points[i] * (1.0 - weight);
+                    }
+                }
+                relaxTowardRingBoundary(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
+                                        inputs.capAtRingOrigin);
+                if (partial)
+                {
+                    // A partially weighted component blends the relaxed result of
+                    // the full rotation with the relaxed result of no rotation.
+                    // Blending before the relax would leave partially lifted points
+                    // inside the ring, where the relax pushes them out along a path
+                    // unrelated to the weight.
+                    MPointArray still = baseRow;
+                    relaxTowardRingBoundary(still, ring, inputs.collision, 0, static_cast<int>(still.length()),
+                                            inputs.capAtRingOrigin);
+                    for (unsigned int i = 0; i < points.length(); ++i)
+                    {
+                        const double componentWeight = componentWeights[topology.vertices[i].componentId];
+                        if (componentWeight <= 0.0 || componentWeight >= 1.0)
+                            continue;
+                        const MPoint &lifted = points[i];
+                        const MPoint &rest = still[i];
+                        points[i] = MPoint(rest.x * (1.0 - componentWeight) + lifted.x * componentWeight,
+                                           rest.y * (1.0 - componentWeight) + lifted.y * componentWeight,
+                                           rest.z * (1.0 - componentWeight) + lifted.z * componentWeight, lifted.w);
+                    }
+                }
+                result.push_back(points);
+                continue;
+            }
+        }
+        relaxTowardRingBoundary(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
+                                inputs.capAtRingOrigin);
+        result.push_back(points);
+    }
+    ringPoints.swap(result);
+    if (componentWeights)
+        componentWeights->swap(weights);
+    return MS::kSuccess;
+}
+
+// Final relax of a merged row for one ring. Points of a component that ring
+// lifts with a partial weight sit on the chord between the relaxed still and
+// relaxed lifted states, inside the ring; relaxing them fully would snap them
+// back to the boundary and undo the blend, so the relax fades out towards the
+// middle of the transition (f = 1 - 4m(1-m)) and is complete at both ends.
+void BellColliderSolver::relaxRowFaded(MPointArray &points, const PreparedBellRing &ring, double collision,
+                                       bool capAtRingOrigin, const BellRowTopology &topology,
+                                       const std::vector<double> &componentWeights)
+{
+    bool partial = false;
+    for (double weight : componentWeights)
+        partial = partial || (weight > 0.0 && weight < 1.0);
+    if (!partial || topology.vertices.size() != points.length())
+    {
+        relaxTowardRingBoundary(points, ring, collision, 0, static_cast<int>(points.length()), capAtRingOrigin);
+        return;
+    }
+    MPointArray relaxed = points;
+    relaxTowardRingBoundary(relaxed, ring, collision, 0, static_cast<int>(relaxed.length()), capAtRingOrigin);
+    for (unsigned int i = 0; i < points.length(); ++i)
+    {
+        const double m = componentWeights[topology.vertices[i].componentId];
+        if (m <= 0.0 || m >= 1.0)
+        {
+            points[i] = relaxed[i];
+            continue;
+        }
+        const double f = 1.0 - 4.0 * m * (1.0 - m);
+        const MPoint &before = points[i];
+        const MPoint &after = relaxed[i];
+        points[i] = MPoint(before.x * (1.0 - f) + after.x * f, before.y * (1.0 - f) + after.y * f,
+                           before.z * (1.0 - f) + after.z * f, after.w);
+    }
+}
+
+MStatus BellColliderSolver::solveRow(const BellRowInputs &inputs, const MPointArray &baseRow,
+                                     const BellRowTopology &topology, BellRowOutputs &outputs)
+{
+    if (!validRowTopology(topology, baseRow.length()) || !finiteRowPoints(baseRow) || !validRowControls(inputs))
+        return MS::kInvalidParameter;
+    BellRowOutputs result;
+    result.points = baseRow;
+    result.directDisplacements.assign(baseRow.length(), MVector(0, 0, 0));
+    result.directField.topology = topology;
+    result.directField.values.assign(baseRow.length(), MVector(0, 0, 0));
+    if (baseRow.length() == 0 || inputs.rings.empty())
+    {
+        outputs = result;
+        return MS::kSuccess;
+    }
+    std::vector<std::vector<unsigned int>> seeds;
+    for (const auto &ring : inputs.rings)
+        seeds.push_back(rowContactSeeds(inputs, baseRow, topology, ring));
+    std::vector<MPointArray> ringPoints;
+    std::vector<std::vector<double>> componentWeights;
+    const MStatus status = deformPoints(inputs, baseRow, topology, seeds, ringPoints, &componentWeights);
+    if (!status)
+        return status;
+    const bool gate = inputs.smoothness > 0.0 || inputs.followGain > 0.0;
+    for (unsigned int i = 0; i < baseRow.length(); ++i)
+    {
+        double sum = 0.0;
+        double maximum = 0.0;
+        for (const auto &points : ringPoints)
+        {
+            const double length = (points[i] - baseRow[i]).length();
+            sum += pow(length, 2);
+            if (length > maximum)
+                maximum = length;
+        }
+        if (sum > 0.0)
+        {
+            MVector merged(0, 0, 0);
+            for (const auto &points : ringPoints)
+            {
+                const MVector displacement = points[i] - baseRow[i];
+                const double squaredLength = pow(displacement.length(), 2);
+                const double weight = squaredLength / sum;
+                merged += displacement * weight;
+            }
+            if (gate)
+                result.directDisplacements[i] = merged;
+            else if (merged.length() > 1e-5)
+                result.directDisplacements[i] = merged.normal() * maximum;
+        }
+    }
+    computeLocalFollow(result.directDisplacements, topology, inputs.bellMatrix, inputs.followRange,
+                       result.directField.values);
+    std::vector<MVector> displacements = result.directDisplacements;
+    if (gate)
+    {
+        for (size_t i = 0; i < displacements.size(); ++i)
+            displacements[i] += result.directField.values[i] * inputs.followGain;
+        smoothDisplacements(displacements, inputs.smoothness, topology);
+    }
+    for (unsigned int i = 0; i < baseRow.length(); ++i)
+        result.points[i] = baseRow[i] + displacements[i];
+    if (gate)
+        for (size_t r = 0; r < inputs.rings.size(); ++r)
+            relaxRowFaded(result.points, inputs.rings[r], inputs.collision, inputs.capAtRingOrigin, topology,
+                          componentWeights[r]);
+    result.componentWeights.swap(componentWeights);
+    outputs = result;
+    return MS::kSuccess;
+}
+
+MStatus BellColliderSolver::transferDirectField(const BellDirectField &source, const BellRowTopology &destination,
+                                                BellRowTransfer &transfer)
+{
+    if (!validRowTopology(source.topology, source.values.size()) || !finiteRowVectors(source.values) ||
+        !validRowTopology(destination, destination.vertices.size()))
+        return MS::kInvalidParameter;
+    std::vector<MVector> result(destination.vertices.size(), MVector(0, 0, 0));
+    std::vector<std::vector<size_t>> members(source.topology.components.size());
+    for (size_t i = 0; i < source.values.size(); ++i)
+        members[source.topology.vertices[i].componentId].push_back(i);
+    for (auto &indices : members)
+        std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+            return source.topology.vertices[a].materialU < source.topology.vertices[b].materialU;
+        });
+    for (size_t i = 0; i < destination.vertices.size(); ++i)
+    {
+        const auto &target = destination.vertices[i];
+        for (size_t c = 0; c < members.size(); ++c)
+        {
+            const auto &component = source.topology.components[c];
+            const auto &indices = members[c];
+            const auto &first = source.topology.vertices[indices.front()];
+            const auto &last = source.topology.vertices[indices.back()];
+            double u = target.materialU;
+            if (component.closed)
+                u -= std::floor(u - first.materialU);
+            else
+            {
+                constexpr double tolerance = 1e-9;
+                const double startOffset = target.materialU - component.startU;
+                const double endOffset = target.materialU - component.endU;
+                const bool atStart = std::abs(startOffset - std::round(startOffset)) <= tolerance;
+                const bool atEnd = std::abs(endOffset - std::round(endOffset)) <= tolerance;
+                const auto sideMatch = [&](const BellRowVertex &endpoint) {
+                    if (endpoint.side.bank == 0 || target.side.bank == 0)
+                        return 0;
+                    return endpoint.side.bank == target.side.bank && endpoint.side.seamIndex == target.side.seamIndex
+                               ? 1
+                               : -1;
+                };
+                if (atStart || atEnd)
+                {
+                    const int startMatch = atStart ? sideMatch(first) : -1;
+                    const int endMatch = atEnd ? sideMatch(last) : -1;
+                    if (startMatch < 0 && endMatch < 0)
+                        continue;
+                    const bool useEnd = endMatch > startMatch ||
+                                        (endMatch == startMatch && std::abs(endOffset) < std::abs(startOffset));
+                    u = useEnd ? component.endU : component.startU;
+                }
+                else
+                {
+                    if (u < component.startU || u > component.endU)
+                        u += std::ceil(component.startU - u);
+                    if (u < component.startU || u > component.endU)
+                        continue;
+                }
+            }
+            if (u <= first.materialU || indices.size() == 1)
+                result[i] = source.values[indices.front()];
+            else if (u >= last.materialU && !component.closed)
+                result[i] = source.values[indices.back()];
+            else
+            {
+                size_t right = 0;
+                while (right < indices.size() && source.topology.vertices[indices[right]].materialU < u)
+                    ++right;
+                if (right < indices.size() && source.topology.vertices[indices[right]].materialU == u)
+                    result[i] = source.values[indices[right]];
+                else
+                {
+                    const size_t leftIndex = indices[right - 1];
+                    const size_t rightIndex = right == indices.size() ? indices.front() : indices[right];
+                    const double leftU = source.topology.vertices[leftIndex].materialU;
+                    const double rightU =
+                        source.topology.vertices[rightIndex].materialU + (right == indices.size() ? 1.0 : 0.0);
+                    const double lambda = (u - leftU) / (rightU - leftU);
+                    result[i] = source.values[leftIndex] * (1.0 - lambda) + source.values[rightIndex] * lambda;
+                }
+            }
+            break;
+        }
+    }
+    transfer.values.swap(result);
     return MS::kSuccess;
 }

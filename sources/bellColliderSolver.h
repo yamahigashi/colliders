@@ -56,9 +56,98 @@ struct BellColliderOutputs
     MVector meanDisplacement = MVector(0, 0, 0);
 };
 
+struct BellRowSide
+{
+    int seamIndex = -1;
+    int bank = 0;
+};
+
+struct BellRowComponent
+{
+    double startU = 0.0;
+    double endU = 1.0;
+    bool closed = false;
+};
+
+struct BellRowVertex
+{
+    double materialU = 0.0;
+    BellRowSide side;
+    int previous = -1;
+    int next = -1;
+    int componentId = 0;
+    int panelId = 0;
+    std::vector<unsigned int> outputDuplicates;
+};
+
+struct BellRowTopology
+{
+    std::vector<BellRowVertex> vertices;
+    std::vector<BellRowComponent> components;
+    unsigned int outputCount = 0;
+};
+
+struct BellRowInputs
+{
+    MMatrix bellMatrix;
+    std::vector<PreparedBellRing> rings;
+    float falloff = 0.0f;
+    float collision = 0.0f;
+    bool capAtRingOrigin = false;
+    double smoothness = 0.0;
+    double followGain = 0.0;
+    double followRange = 0.1875;
+    // Material width over which a row component fades out of a ring rotation
+    // once the ring points past its end (0 keeps only the components that
+    // contain the contact position).
+    double contactBlendWidth = 0.0;
+    int physicalLevel = 0;
+};
+
+struct BellDirectField
+{
+    BellRowTopology topology;
+    std::vector<MVector> values;
+};
+
+struct BellRowTransfer
+{
+    std::vector<MVector> values;
+};
+
+struct BellRowOutputs
+{
+    // Points are ordered by independent CV; the caller expands output duplicates.
+    MPointArray points;
+    std::vector<MVector> directDisplacements;
+    BellDirectField directField;
+    // One weight per component for each input ring, in ring order.
+    std::vector<std::vector<double>> componentWeights;
+};
 class BellColliderSolver
 {
 public:
+  static MStatus solveRow(const BellRowInputs &inputs, const MPointArray &baseRow,
+                         const BellRowTopology &topology, BellRowOutputs &outputs);
+  static MStatus smoothDisplacements(std::vector<MVector> &displacements, double smoothness,
+                                    const BellRowTopology &topology);
+  static MStatus computeLocalFollow(const std::vector<MVector> &directDisplacements,
+                                   const BellRowTopology &topology, const MMatrix &bellMatrix,
+                                   double followRange, std::vector<MVector> &follow);
+  static MStatus transferDirectField(const BellDirectField &source, const BellRowTopology &destination,
+                                    BellRowTransfer &transfer);
+  // componentWeights, when given, receives one weight per component for each
+  // ring (1 for rings without a rotation).
+  // Relax toward one ring, faded for the points of components that ring lifts
+  // with a partial weight (see the row contract); complete for weights 0 and 1.
+  static void relaxRowFaded(MPointArray &points, const PreparedBellRing &ring, double collision,
+                            bool capAtRingOrigin, const BellRowTopology &topology,
+                            const std::vector<double> &componentWeights);
+  static MStatus deformPoints(const BellRowInputs &inputs, const MPointArray &baseRow,
+                              const BellRowTopology &topology,
+                              const std::vector<std::vector<unsigned int>> &ringSeeds,
+                              std::vector<MPointArray> &ringPoints,
+                              std::vector<std::vector<double>> *componentWeights = nullptr);
   static MPointArray makeBellPoints(const MMatrix &matrix, unsigned int axis, int numSides, double height = 1,
                                     double bottomRadius = 1, double topRadius = 1);
   static MPointArray makeBellPoints(const MMatrix &matrix, unsigned int axis, const BellCircleTable &circle,
@@ -74,7 +163,7 @@ public:
   static MStatus solve(const BellColliderInputs &inputs, const MPointArray &baseBellPoints,
                        BellColliderOutputs &outputs);
 
-private:
     static void deformPoints(const BellColliderInputs& inputs, const std::vector<PreparedBellRing>& rings, const MPointArray& baseBellPoints, const Plane& bellPlane, std::vector<MPointArray>& bellPointsList);
+private:
     static void averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const std::vector<MPointArray>& bellPointsList, MPointArray& outBellPoints, bool useUnnormalized);
 };

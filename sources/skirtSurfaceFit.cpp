@@ -1,6 +1,7 @@
 #include <maya/MDataBlock.h>
 #include <maya/MDataHandle.h>
 #include <maya/MDoubleArray.h>
+#include <maya/MFnDoubleArrayData.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnNurbsSurface.h>
 #include <maya/MFnNurbsSurfaceData.h>
@@ -19,6 +20,7 @@
 MTypeId SkirtSurfaceFit::typeId(PluginIdentity::kSkirtSurfaceFitTypeId);
 MObject SkirtSurfaceFit::attr_inputSurface;
 MObject SkirtSurfaceFit::attr_spansV;
+MObject SkirtSurfaceFit::attr_protectedVParameters;
 MObject SkirtSurfaceFit::attr_outputSurface;
 
 namespace
@@ -27,6 +29,21 @@ MStatus invalidInput(const char* reason)
 {
     MGlobal::displayError(MString("yddSkirtSurfaceFit: ") + reason);
     return MS::kInvalidParameter;
+}
+
+const char* protectedReason(int condition)
+{
+    if (condition == 10)
+        return "protectedVParameters must be finite and strictly increasing in (0, 1).";
+    if (condition == 11)
+        return "protectedVParameters band length times V domain length must be greater than 1e-12.";
+    if (condition == 12)
+        return "spansV must be at least the number of protected bands.";
+    if (condition == 13)
+        return "inputSurface V degree must be 1 when protectedVParameters is set.";
+    if (condition == 14)
+        return "each protectedVParameters value must match exactly one input V row within 1e-9, and each input V row must match at most one protected value.";
+    return "protectedVParameters is invalid.";
 }
 }
 
@@ -52,6 +69,21 @@ MStatus SkirtSurfaceFit::initialize()
     stat = addAttribute(attr_spansV);
     CHECK_MSTATUS_AND_RETURN_IT(stat);
 
+    MFnTypedAttribute protectedAttr;
+    MFnDoubleArrayData defaultProtectedFn;
+    MObject defaultProtected = defaultProtectedFn.create(MDoubleArray(), &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    attr_protectedVParameters = protectedAttr.create("protectedVParameters", "pvp",
+        MFnData::kDoubleArray, defaultProtected, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    protectedAttr.setWritable(true);
+    protectedAttr.setStorable(true);
+    protectedAttr.setKeyable(false);
+    protectedAttr.setConnectable(true);
+    protectedAttr.setReadable(true);
+    stat = addAttribute(attr_protectedVParameters);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
     MFnTypedAttribute outputAttr;
     attr_outputSurface = outputAttr.create("outputSurface", "os", MFnData::kNurbsSurface,
         MObject::kNullObj, &stat);
@@ -63,7 +95,9 @@ MStatus SkirtSurfaceFit::initialize()
 
     stat = attributeAffects(attr_inputSurface, attr_outputSurface);
     CHECK_MSTATUS_AND_RETURN_IT(stat);
-    return attributeAffects(attr_spansV, attr_outputSurface);
+    stat = attributeAffects(attr_spansV, attr_outputSurface);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    return attributeAffects(attr_protectedVParameters, attr_outputSurface);
 }
 
 MStatus SkirtSurfaceFit::compute(const MPlug& plug, MDataBlock& dataBlock)
@@ -130,13 +164,48 @@ MStatus SkirtSurfaceFit::compute(const MPlug& plug, MDataBlock& dataBlock)
         if (vKnots[i] < vKnots[i - 1])
             return invalidInput("inputSurface V knots must be nondecreasing.");
 
+    if (vKnots[nv - 1] - vKnots[q - 1] <= 1e-12)
+        return invalidInput("inputSurface V parameter domain length must be greater than 1e-12.");
+
+    std::vector<double> protectedV;
+    MDataHandle protectedHandle = dataBlock.inputValue(attr_protectedVParameters, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const MObject protectedData = protectedHandle.data();
+    if (!protectedData.isNull())
+    {
+        MFnDoubleArrayData protectedFn(protectedData, &stat);
+        if (stat == MS::kSuccess)
+        {
+            const MDoubleArray values = protectedFn.array();
+            protectedV.resize(values.length());
+            for (unsigned int i = 0; i < values.length(); ++i)
+                protectedV[i] = values[i];
+        }
+    }
+
     std::vector<double> inputVKnots(vKnots.length());
     for (unsigned int i = 0; i < vKnots.length(); ++i)
         inputVKnots[i] = vKnots[i];
-    const int m = spansV + 3;
+
+    int m = spansV + 3;
     std::vector<double> samples;
-    if (!NurbsRefit::sampleMatrix(nv, q, inputVKnots, m, samples))
-        return invalidInput("inputSurface V parameter domain length must be greater than 1e-12.");
+    std::vector<double> outputVKnots;
+    if (protectedV.empty())
+    {
+        if (!NurbsRefit::sampleMatrix(nv, q, inputVKnots, m, samples))
+            return invalidInput("inputSurface V parameter domain length must be greater than 1e-12.");
+        outputVKnots = NurbsRefit::clampedUniformKnotsMaya(spansV, 3);
+    }
+    else
+    {
+        const int condition = NurbsRefit::protectedFitCondition(nv, q, inputVKnots, spansV, protectedV);
+        if (condition != 0)
+            return invalidInput(protectedReason(condition));
+        if (!NurbsRefit::sampleMatrix(nv, q, inputVKnots, spansV, protectedV, samples))
+            return invalidInput(protectedReason(14));
+        m = NurbsRefit::protectedCvCount(spansV, static_cast<int>(protectedV.size()));
+        outputVKnots = NurbsRefit::protectedKnotsMaya(spansV, protectedV);
+    }
 
     std::vector<double> points(nu * nv * 3);
     for (int i = 0; i < nu * nv; ++i)
@@ -156,7 +225,6 @@ MStatus SkirtSurfaceFit::compute(const MPlug& plug, MDataBlock& dataBlock)
     for (int i = 0; i < nu * m; ++i)
         outputCVs.set(MPoint(outputPoints[i * 3], outputPoints[i * 3 + 1],
             outputPoints[i * 3 + 2], 1.0), i);
-    const std::vector<double> outputVKnots = NurbsRefit::clampedUniformKnotsMaya(spansV, 3);
     MDoubleArray outputKnots;
     for (double value : outputVKnots)
         outputKnots.append(value);

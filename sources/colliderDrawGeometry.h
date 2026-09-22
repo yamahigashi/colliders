@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <maya/MFloatPointArray.h>
 #include <maya/MFnMesh.h>
 #include <maya/MIntArray.h>
@@ -154,24 +155,80 @@ struct BellMesh {
   }
 };
 struct Curves {
-  MPointArray points, lines;
-  unsigned int numU = 0, numV = 0;
+  struct Element {
+    unsigned int panelId = 0;
+    MPointArray points;
+    unsigned int numU = 0, numV = 0;
+    MPointArray lines;
+  };
+  std::vector<Element> elements;
+  MPointArray lines;
+
+  static bool samePointBits(const MPointArray &a, const MPointArray &b) {
+    if (a.length() != b.length())
+      return false;
+    for (unsigned int i = 0; i < a.length(); ++i)
+      if (std::memcmp(&a[i].x, &b[i].x, sizeof(double)) != 0 ||
+          std::memcmp(&a[i].y, &b[i].y, sizeof(double)) != 0 ||
+          std::memcmp(&a[i].z, &b[i].z, sizeof(double)) != 0 ||
+          std::memcmp(&a[i].w, &b[i].w, sizeof(double)) != 0)
+        return false;
+    return true;
+  }
+  bool clearInvalidCache() {
+    const bool changed = !elements.empty();
+    elements.clear();
+    lines.clear();
+    return changed;
+  }
+  bool update(const std::vector<Element> &next) {
+    if (next.empty())
+      return clearInvalidCache();
+    for (const auto &element : next) {
+      if (element.numU == 0 || element.numV == 0 ||
+          element.points.length() / element.numV != element.numU ||
+          element.points.length() % element.numV != 0)
+        return clearInvalidCache();
+      for (unsigned int i = 0; i < element.points.length(); ++i) {
+        const auto &point = element.points[i];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+            !std::isfinite(point.z) || !std::isfinite(point.w))
+          return clearInvalidCache();
+      }
+    }
+    const size_t previousSize = elements.size();
+    bool changed = previousSize != next.size();
+    elements.resize(next.size());
+    for (size_t i = 0; i < next.size(); ++i) {
+      auto &element = elements[i];
+      const auto &input = next[i];
+      if (i < previousSize && element.panelId == input.panelId &&
+          element.numU == input.numU && element.numV == input.numV &&
+          samePointBits(element.points, input.points))
+        continue;
+      changed = true;
+      element.panelId = input.panelId;
+      element.points = input.points;
+      element.numU = input.numU;
+      element.numV = input.numV;
+      element.lines.clear();
+      for (unsigned int v = 0; v < element.numV; ++v)
+        for (unsigned int u = 1; u < element.numU; ++u) {
+          element.lines.append(element.points[(u - 1) * element.numV + v]);
+          element.lines.append(element.points[u * element.numV + v]);
+        }
+    }
+    if (changed) {
+      lines.clear();
+      for (const auto &element : elements)
+        for (unsigned int i = 0; i < element.lines.length(); ++i)
+          lines.append(element.lines[i]);
+    }
+    return changed;
+  }
   bool update(const MPointArray &next, unsigned int uCount,
               unsigned int vCount) {
-    if (numU == uCount && numV == vCount && samePoints(points, next))
-      return false;
-    points = next;
-    numU = uCount;
-    numV = vCount;
-    lines.clear();
-    if (points.length() != numU * numV)
-      return true;
-    for (unsigned int v = 0; v < numV; ++v)
-      for (unsigned int u = 1; u < numU; ++u) {
-        lines.append(points[(u - 1) * numV + v]);
-        lines.append(points[u * numV + v]);
-      }
-    return true;
+    return update(std::vector<Element>{{0, next, uCount, vCount, {}}});
   }
 };
 } // namespace ColliderDraw

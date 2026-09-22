@@ -1,16 +1,19 @@
 #pragma once
 
-#include <maya/MPxLocatorNode.h>
-#include <maya/MPxDrawOverride.h>
+#include "colliderDrawGeometry.h"
+#include <atomic>
+#include <maya/MColor.h>
 #include <maya/MDrawRegistry.h>
+#include <maya/MMatrix.h>
+#include <maya/MObject.h>
 #include <maya/MPointArray.h>
+#include <maya/MPlugArray.h>
+#include <maya/MPxDrawOverride.h>
+#include <maya/MPxLocatorNode.h>
 #include <maya/MStatus.h>
 #include <maya/MTypeId.h>
-#include <maya/MMatrix.h>
-#include <maya/MColor.h>
-#include <maya/MObject.h>
+#include <mutex>
 #include <vector>
-#include "colliderDrawGeometry.h"
 
 struct SkirtDrawData
 {
@@ -21,7 +24,7 @@ struct SkirtDrawData
 
 class SkirtBellCollider : public MPxLocatorNode
 {
-public:
+  public:
     static MTypeId typeId;
     static MString typeName;
 
@@ -63,19 +66,48 @@ public:
     static MObject attr_rightRingAxis;
     static MObject attr_bellAxis;
 
+    static MObject attr_seams;
+    static MObject attr_seamEnabled;
+    static MObject attr_seamMaterialU;
+    static MObject attr_seamStartHeight;
+    static MObject attr_panelHems;
+    static MObject attr_hemUSamples;
+    static MObject attr_hemHeightSamples;
+    static MObject attr_followRange;
+    static MObject attr_referenceMaterialHeight;
     // Outputs
     static MObject attr_outputSurface;
+    static MObject attr_outputReferenceHeight;
+    static MObject attr_outputPatches;
+    static MObject attr_patchSurface;
+    static MObject attr_patchMaterialUStart;
+    static MObject attr_patchMaterialUEnd;
+    static MObject attr_patchVBreaks;
+    static MObject attr_patchHemUSamples;
+    static MObject attr_patchHemHeightSamples;
 
-    SkirtBellCollider() : MPxLocatorNode() {}
-    virtual ~SkirtBellCollider() override {}
+    SkirtBellCollider() : MPxLocatorNode()
+    {
+    }
+    virtual ~SkirtBellCollider() override
+    {
+    }
 
-    static void* creator() { return new SkirtBellCollider(); }
+    static void *creator()
+    {
+        return new SkirtBellCollider();
+    }
     static MStatus initialize();
     virtual void postConstructor() override;
 
-    virtual MStatus compute(const MPlug& plug, MDataBlock& dataBlock) override;
-};
+    virtual MStatus compute(const MPlug &plug, MDataBlock &dataBlock) override;
 
+    virtual MStatus setDependentsDirty(const MPlug &plugBeingDirtied, MPlugArray &affectedPlugs) override;
+
+  private:
+    std::atomic<bool> warnedIgnoredHem_{false};
+    std::mutex computeMutex_;
+};
 class SkirtBellColliderDrawData : public MUserData
 {
 public:

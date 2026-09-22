@@ -53,6 +53,8 @@ MObject SkirtWaveDeformer::attr_noiseFrequencyV;
 MObject SkirtWaveDeformer::attr_noiseFrequencyU;
 MObject SkirtWaveDeformer::attr_skew;
 MObject SkirtWaveDeformer::attr_sharpness;
+MObject SkirtWaveDeformer::attr_heightNormalization;
+MObject SkirtWaveDeformer::attr_referenceHeight;
 
 namespace
 {
@@ -524,6 +526,28 @@ MStatus SkirtWaveDeformer::initialize()
     stat = addAttribute(attr_sharpness);
     CHECK_MSTATUS_AND_RETURN_IT(stat);
 
+    attr_heightNormalization = eAttr.create("heightNormalization", "hn", 0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    eAttr.addField("CurrentGeometry", 0);
+    eAttr.addField("ReferenceHeight", 1);
+    eAttr.setWritable(true);
+    eAttr.setStorable(true);
+    eAttr.setKeyable(false);
+    eAttr.setConnectable(true);
+    eAttr.setReadable(true);
+    stat = addAttribute(attr_heightNormalization);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    attr_referenceHeight = nAttr.create("referenceHeight", "rh", MFnNumericData::kDouble, 1.0, &stat);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    nAttr.setWritable(true);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(false);
+    nAttr.setConnectable(true);
+    nAttr.setReadable(true);
+    stat = addAttribute(attr_referenceHeight);
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
     const MObject affects[] = {
         attr_bellMatrix,
         attr_evaluationToWorldRotation,
@@ -554,7 +578,9 @@ MStatus SkirtWaveDeformer::initialize()
         attr_noiseFrequencyV,
         attr_noiseFrequencyU,
         attr_skew,
-        attr_sharpness
+        attr_sharpness,
+        attr_heightNormalization,
+        attr_referenceHeight
     };
     for (const MObject& attribute : affects)
     {
@@ -630,6 +656,25 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
     CHECK_MSTATUS_AND_RETURN_IT(stat);
     const float envelopeValue = dataBlock.inputValue(envelope, &stat).asFloat();
     CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const short heightNormalization = dataBlock.inputValue(attr_heightNormalization, &stat).asShort();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+    const double referenceHeight = dataBlock.inputValue(attr_referenceHeight, &stat).asDouble();
+    CHECK_MSTATUS_AND_RETURN_IT(stat);
+
+    if (heightNormalization != 0 && heightNormalization != 1)
+    {
+        MFnDependencyNode nodeFn(thisMObject());
+        MGlobal::displayError(MString(PluginIdentity::kSkirtWaveNodeName) + " " + nodeFn.name()
+            + ": heightNormalization must be 0 or 1.");
+        return MS::kInvalidParameter;
+    }
+    if (heightNormalization == 1 && !(std::isfinite(referenceHeight) && referenceHeight > 0.0))
+    {
+        MFnDependencyNode nodeFn(thisMObject());
+        MGlobal::displayError(MString(PluginIdentity::kSkirtWaveNodeName) + " " + nodeFn.name()
+            + ": referenceHeight must be finite and positive.");
+        return MS::kInvalidParameter;
+    }
 
     const bool finiteBellMatrix = isFiniteMatrix(bellMatrix);
     const double determinant = finiteBellMatrix ? bellMatrix.det4x4() : 0.0;
@@ -718,8 +763,9 @@ MStatus SkirtWaveDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter,
             maximumHeight = point.bellLocalPoint.y;
         points.push_back(point);
     }
-    const double hemHeight = maximumHeight < kMinimumHemHeight
-        ? kMinimumHemHeight : maximumHeight;
+    const double hemHeight = heightNormalization == 1
+        ? referenceHeight
+        : (maximumHeight < kMinimumHemHeight ? kMinimumHemHeight : maximumHeight);
 
     MStatus rampStatus;
     MRampAttribute amplitudeRamp(thisMObject(), attr_amplitudeRamp, &rampStatus);
