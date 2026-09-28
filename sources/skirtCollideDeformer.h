@@ -11,8 +11,13 @@
 #include <memory>
 #include <mutex>
 
+#include "skirtSurfaceCache.h"
+
 struct SkirtCollideSurfaceTopology;
 struct SkirtCollideEvaluation;
+struct SkirtCollideSurfacePreparation;
+struct SkirtCollideSurfaceWorkspace;
+struct SkirtCollideSurfaceWorkspacePool;
 
 class SkirtCollideDeformer : public MPxDeformerNode
 {
@@ -53,8 +58,8 @@ public:
     static MObject attr_rightRingAxis;
     static MObject attr_falloff;
 
-    SkirtCollideDeformer() : MPxDeformerNode(), restGeometryWarningIssued(false) {}
-    virtual ~SkirtCollideDeformer() override {}
+    SkirtCollideDeformer();
+    virtual ~SkirtCollideDeformer() override;
 
     static void* creator() { return new SkirtCollideDeformer(); }
     static MStatus initialize();
@@ -63,8 +68,13 @@ public:
 
 private:
     std::atomic<bool> restGeometryWarningIssued;
-    std::mutex surfaceTopologyMutex;
-    std::shared_ptr<const SkirtCollideSurfaceTopology> surfaceTopology;
+    SkirtSurfaceCache<SkirtCollideSurfaceTopology, SkirtCollideSurfacePreparation> surfaceCache;
     std::mutex evaluationMutex;
     std::map<unsigned int, std::shared_ptr<const SkirtCollideEvaluation>> evaluations;
+    std::shared_ptr<SkirtCollideSurfaceWorkspacePool> workspacePool;
+
+    static std::unique_ptr<SkirtCollideSurfaceWorkspace>
+    acquireWorkspace(const std::shared_ptr<SkirtCollideSurfaceWorkspacePool>& pool);
+    static void releaseWorkspace(const std::shared_ptr<SkirtCollideSurfaceWorkspacePool>& pool,
+                                 std::unique_ptr<SkirtCollideSurfaceWorkspace> workspace) noexcept;
 };

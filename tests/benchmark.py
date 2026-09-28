@@ -6,7 +6,7 @@ import platform
 import statistics
 import time
 
-from helpers import cylinder, maya_session, output_object, parser, skirt, transform, wave_settings
+from helpers import cylinder, maya_session, output_object, parser, projection_rig, skirt, transform, wave_settings
 
 
 def measure(node, attribute, dirty, values, iterations):
@@ -82,17 +82,11 @@ def run(iterations, node_filter=None):
     for size in (80, 1088, 16512):
         if node_filter not in (None, "yddSkirtCollideDeformer"):
             continue
-        for condition in ("active", "collision0", "envelope0"):
+        for condition in ("active", "envelope0"):
             cmds.file(new=True, force=True)
             obj = cylinder(size)
-            node = cmds.deformer(obj, type="yddSkirtCollideDeformer")[0]
-            cmds.setAttr(node + ".ringScale", 0.7, 1, 0.7)
-            cmds.setAttr(node + ".falloff", 0.2)
-            for side, x in [("left", -1), ("right", 1)]:
-                for part, y in [("Hip", 10), ("Knee", 5), ("Heel", 0)]:
-                    joint = transform((x, y, 0))
-                    cmds.connectAttr(joint + ".worldMatrix[0]", node + "." + side + part + "Matrix")
-                cmds.setAttr(node + "." + side + "RingAxis", 4)
+            rig = projection_rig(mesh=obj, angle=90, scale=(1.5, 1, 1.5))
+            node = rig["node"]
             if condition != "active":
                 cmds.setAttr(node + "." + condition[:-1], 0)
             rows.append(
@@ -100,7 +94,7 @@ def run(iterations, node_filter=None):
                     node="yddSkirtCollideDeformer",
                     points=size,
                     condition=condition,
-                    **measure(node, "outputGeometry[0]", "endFade", (0.1, 0.1001), iterations),
+                    **measure(node, "outputGeometry[0]", "nodeState", (0, 1), iterations),
                 )
             )
     return rows

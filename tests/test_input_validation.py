@@ -9,6 +9,8 @@ import unittest
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from helpers import bind_rest_inputs, duplicate_rest_geometry
+
 
 def matrix(x=0.0, y=0.0, z=0.0):
     return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]
@@ -91,12 +93,14 @@ class InputValidationTests(unittest.TestCase):
         return om.MFnDagNode(obj).fullPathName()
 
     def collision(self, mesh):
+        rest = duplicate_rest_geometry(mesh)
         node = cmds.deformer(mesh, type="yddSkirtCollideDeformer")[0]
         for side, x in (("left", 0), ("right", 4)):
             for part, y in (("Hip", 0), ("Knee", 1), ("Heel", 2)):
                 cmds.setAttr(node + "." + side + part + "Matrix", *matrix(x, y), type="matrix")
             cmds.setAttr(node + "." + side + "RingAxis", 1)
         cmds.setAttr(node + ".ringScale", 1, 1, 1, type="double3")
+        bind_rest_inputs(node, rest)
         return node
 
     def assert_recovers(self, node, attribute, invalid_values, read_value):

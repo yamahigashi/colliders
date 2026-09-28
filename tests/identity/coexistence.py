@@ -84,7 +84,7 @@ def defaults_and_creation(types):
         if node_type.endswith("Deformer"):
             geometry = cmds.polyCylinder(constructionHistory=False)[0]
             node = cmds.deformer(geometry, type=node_type)[0]
-            attr, expected = ("idleAmplitude", 0.0) if "Wave" in node_type else ("collision", 1.0)
+            attr, expected = ("idleAmplitude", 0.0) if "Wave" in node_type else ("falloff", 0.2)
         else:
             node = cmds.createNode(node_type)
             attr, expected = (
@@ -92,7 +92,7 @@ def defaults_and_creation(types):
             )
         assert_identity(node, node_type)
         value = cmds.getAttr(node + "." + attr)
-        require(value == expected, "Default changed: " + node_type + "." + attr)
+        require(abs(value - expected) <= 1e-7, "Default changed: " + node_type + "." + attr)
         defaults[node_type] = {attr: value}
     return defaults
 
@@ -107,6 +107,9 @@ def import_backend(name, directory):
 
 def scene_fixture(fork_module, upstream_module):
     from maya import cmds
+
+    sys.path.insert(0, str(ROOT / "tests"))
+    from helpers import bind_rest_inputs, duplicate_rest_geometry
 
     records, connections, outputs = {}, [], {}
     for module, prefix, expected in (
@@ -141,6 +144,7 @@ def scene_fixture(fork_module, upstream_module):
         outputs[plane + ".outputPosition"] = "numeric"
     for node_type in ("yddSkirtCollideDeformer", "yddSkirtWaveDeformer"):
         geometry = cmds.polyCylinder(radius=1, height=4, subdivisionsX=16, subdivisionsY=4, constructionHistory=False)[0]
+        rest = duplicate_rest_geometry(geometry) if node_type == "yddSkirtCollideDeformer" else None
         node = cmds.deformer(geometry, type=node_type)[0]
         locator = cmds.createNode("transform", name=node + "Driver")
         cmds.connectAttr(locator + ".worldMatrix[0]", node + ".bellMatrix")
@@ -148,10 +152,25 @@ def scene_fixture(fork_module, upstream_module):
         if "Wave" in node_type:
             attrs = dict(idleAmplitude=0.375, wavePhaseV=0.25, idleDirectionality=1, phaseSpread=0.125)
         else:
-            attrs = dict(collision=0.625, falloff=0.25)
+            attrs = dict(thighRadiusZ=1.25)
+            for side, x in (("left", -1), ("right", 1)):
+                for part, y in (("Hip", 2), ("Knee", 0), ("Heel", -2)):
+                    joint = cmds.createNode("transform")
+                    cmds.setAttr(joint + ".translate", x, y, 0)
+                    source = joint + ".worldMatrix[0]"
+                    destination = node + "." + side + part + "Matrix"
+                    cmds.connectAttr(source, destination)
+                    connections.append((source, destination))
+                cmds.setAttr(node + "." + side + "RingAxis", 4)
+            bind_rest_inputs(node, rest)
+            rest_shape = cmds.listRelatives(rest, shapes=True, noIntermediate=True, fullPath=True)[0]
+            connections.append((rest_shape + ".outMesh", node + ".restGeometry"))
         for attr, value in attrs.items():
             cmds.setAttr(node + "." + attr, value)
         records[node] = list(attrs)
+        if rest is not None:
+            records[node].extend("rest" + name + "Matrix" for name in
+                                 ("Bell", "LeftHip", "LeftKnee", "LeftHeel", "RightHip", "RightKnee", "RightHeel"))
         outputs[node + ".outputGeometry[0]"] = "mesh"
     return records, connections, outputs
 

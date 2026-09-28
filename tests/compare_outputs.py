@@ -9,7 +9,7 @@ import struct
 import subprocess
 import sys
 
-from helpers import coordinates, maya_session, skirt, transform, wave_settings
+from helpers import coordinates, maya_session, projection_rig, skirt, transform, wave_settings
 
 
 def sample(case, node, attribute, kind="mesh"):
@@ -127,25 +127,27 @@ def capture(plugin):
                     )
                 )
         for skirt_type in (0, 1):
-            for falloff in (0, 0.2):
+            for angle in (0, 90):
                 cmds.file(new=True, force=True)
-                points = [(0.25, y, z) for y, z in [(0.05, 0), (0.5, 0.2), (1, 0), (1.5, 0.1), (2.1, 0)]]
-                points.extend([(1.1, 0.5, 0), (0.1, 0.75, 1.05)])
-                mesh = om.MFnMesh().create([om.MPoint(*p) for p in points], [len(points)], list(range(len(points))))
-                shape = om.MFnDagNode(mesh).fullPathName()
-                node = cmds.deformer(shape, type="yddSkirtCollideDeformer")[0]
-                for side, x in (("left", 0), ("right", 10)):
-                    for joint, y in (("Hip", 0), ("Knee", 1), ("Heel", 2)):
-                        guide = transform((x, y, 0))
-                        cmds.connectAttr(guide + ".worldMatrix[0]", node + "." + side + joint + "Matrix")
-                    cmds.setAttr(node + "." + side + "RingAxis", 1)
-                cmds.setAttr(node + ".ringScale", 1, 1, 1, type="double3")
-                attrs = dict(skirtType=skirt_type, falloff=falloff, endFade=0.1, collision=1)
-                for name, value in attrs.items():
-                    cmds.setAttr(node + "." + name, value)
+                rig = projection_rig(skirt_type, angle=angle)
+                node = rig["node"]
+                shape = cmds.listRelatives(rig["rest"], shapes=True, noIntermediate=True, fullPath=True)[0]
+                rest_matrices = {
+                    name: cmds.getAttr(node + ".rest" + name + "Matrix")
+                    for name in ("Bell", "LeftHip", "LeftKnee", "LeftHeel", "RightHip", "RightKnee", "RightHeel")
+                }
+                attrs = dict(skirtType=skirt_type, ringScale=(1.5, 1, 1.5))
                 rows.append(
                     sample(
-                        dict(group="leg_collision", attributes=attrs, input_points=points), node, "outputGeometry[0]"
+                        dict(
+                            group="leg_collision",
+                            attributes=attrs,
+                            left_hip_angle=angle,
+                            rest_matrices=rest_matrices,
+                            input_points=coordinates(shape, "outMesh"),
+                        ),
+                        node,
+                        "outputGeometry[0]",
                     )
                 )
         return dict(metadata=metadata, cases=rows)

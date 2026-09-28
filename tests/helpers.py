@@ -129,3 +129,66 @@ def parser(description):
     result = argparse.ArgumentParser(description=description)
     add_plugin_argument(result)
     return result
+
+
+def duplicate_rest_geometry(geometry):
+    from maya import cmds
+
+    if cmds.nodeType(geometry) in ("mesh", "nurbsSurface"):
+        geometry = cmds.listRelatives(geometry, parent=True, fullPath=True)[0]
+    rest = cmds.duplicate(geometry, returnRootsOnly=True)[0]
+    cmds.delete(rest, constructionHistory=True)
+    cmds.setAttr(rest + ".visibility", False)
+    return rest
+
+
+def bind_rest_inputs(node, rest):
+    from maya import cmds
+
+    shape = cmds.listRelatives(rest, shapes=True, noIntermediate=True, fullPath=True)[0]
+    output = "outMesh" if cmds.nodeType(shape) == "mesh" else "local"
+    cmds.connectAttr(shape + "." + output, node + ".restGeometry", force=True)
+    for name in (
+        "bellMatrix",
+        "leftHipMatrix",
+        "leftKneeMatrix",
+        "leftHeelMatrix",
+        "rightHipMatrix",
+        "rightKneeMatrix",
+        "rightHeelMatrix",
+    ):
+        cmds.setAttr(node + ".rest" + name[0].upper() + name[1:], *cmds.getAttr(node + "." + name), type="matrix")
+
+
+def projection_rig(
+    skirt_type=1, angle=0, both=False, rest_angle=0, mesh=None, scale=(1.5, 1, 1.5), lengths=((5, 5), (5, 5)),
+    bind=True,
+):
+    from maya import cmds
+    import yddColliders
+
+    if mesh is None:
+        mesh = cmds.polyCylinder(
+            radius=2.6, height=11, subdivisionsX=32, subdivisionsY=16, subdivisionsCaps=0, constructionHistory=False
+        )[0]
+        cmds.move(0, 5.5, 0, mesh + ".vtx[*]", relative=True, objectSpace=True)
+    rest = duplicate_rest_geometry(mesh)
+    node = cmds.deformer(mesh, type="yddSkirtCollideDeformer")[0]
+    waist = transform((0, 11, 0), (180, 0, 0))
+    cmds.connectAttr(waist + ".worldMatrix[0]", node + ".bellMatrix")
+    joints = {}
+    for (side, x), (thigh, calf) in zip((("left", -1), ("right", 1)), lengths):
+        hip, knee, heel = (transform((x, y, 0)) for y in (10, 10 - thigh, 10 - thigh - calf))
+        cmds.parent(knee, heel, hip)
+        cmds.setAttr(node + "." + side + "RingAxis", yddColliders._findAxis(hip, knee))
+        for part, joint in (("Hip", hip), ("Knee", knee), ("Heel", heel)):
+            joints[side + part] = joint
+            cmds.connectAttr(joint + ".worldMatrix[0]", node + "." + side + part + "Matrix")
+        cmds.setAttr(hip + ".rotateX", -rest_angle if side == "left" or both else 0)
+    cmds.setAttr(node + ".skirtType", skirt_type)
+    cmds.setAttr(node + ".ringScale", *scale, type="double3")
+    if bind:
+        bind_rest_inputs(node, rest)
+    cmds.setAttr(joints["leftHip"] + ".rotateX", -angle)
+    cmds.setAttr(joints["rightHip"] + ".rotateX", -angle if both else 0)
+    return dict(node=node, mesh=mesh, rest=rest, waist=waist, joints=joints)

@@ -1,11 +1,12 @@
 {
   "provenance": {
-    "source_commit": "3e88538180ae7a856b394edeb4107e49439ecf5f",
+    "source_commit": "working tree after b83a84a (seam support, version 5.0.0)",
     "maya": "2026",
     "python": "3.11.9 (tags/v3.11.9-dirty:de54cf5be37, Oct 18 2024, 09:47:19) [MSC v.1938 64 bit (AMD64)]",
-    "baseline_binary_sha256": "c543492e4c59a7472d926330b49320895176887740b1f12a674fe4dbc02f9557",
+    "baseline_binary_sha256": "4d571eadd79be576b74f7405bb6456049d83f3c7ff440da1b9f6fcc17fa20225",
     "encoding": "SHA-256 of little-endian IEEE754 doubles (x, y, z, w), Maya CV order",
-    "scope": "12 REVIEW.md default cases and 5 smoothing cases; U1 probes excluded"
+    "scope": "12 default cases and 5 smoothing cases; U1 probes excluded",
+    "note": "Regenerated 2026-09-21 after the seam support; differs from 4.2.0 in the smoothing/follow cases (max 1.13) and in two tightness 0.5 cases (blend before rounding, max 0.0)."
   },
   "cases": [
     {
@@ -141,7 +142,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "b0ad0b0e999a8ffa34d589837a311282dd25dea741ebd5e4b08f393c1311a678"
+      "sha256": "2b2bf160420652cb07fdc48217d9fdfe56ca6e9dab865cf96a680531ceef7f0a"
     },
     {
       "case": {
@@ -171,7 +172,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "99c9e90dd84a44dc3562d2642e7cbba74bf3f05b01f1d47cb8202c8fa64c8a7b"
+      "sha256": "3f4273cca0ec21297e234fd6a1a488502c4f9a39a12aa0dcb963940568796ae0"
     },
     {
       "case": {
@@ -231,7 +232,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "15bbd8420cbcb44f139d848cce00d8c54d7dfa21e38c616f3d4d48a5ad5eea1f"
+      "sha256": "bdb13f5124dcfae9e95e9ffd107137861378ad80b3c3d170ce7ce6bcbf0cb8e9"
     },
     {
       "case": {
@@ -246,7 +247,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "ecacc6b53b14688079e0d1363f3e8ad6c9e7ef1cc5dd4d3d3b3ad73ae00e7d9b"
+      "sha256": "010acc0f0c3ebc133e5e5193163a41d953b0c1c2780262f03d23651a5bdb68ba"
     },
     {
       "case": {
@@ -261,7 +262,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "c3600d24faa358ca7a8f115e1c31119958f754bb23b062335cc703bcb23fd905"
+      "sha256": "d14f2b230ec33e1029ac56f162e0431543dfb33cadc7358102ced1ae5ca428f4"
     }
   ]
 }

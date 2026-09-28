@@ -14,10 +14,17 @@ class RegistrationTests(unittest.TestCase):
 
     def test_plugin_metadata_and_registered_nodes(self):
         self.assertEqual(cmds.pluginInfo("yddColliders", query=True, vendor=True), "yamahigashi")
-        self.assertEqual(cmds.pluginInfo("yddColliders", query=True, version=True), "4.0.0")
+        self.assertEqual(cmds.pluginInfo("yddColliders", query=True, version=True), "5.7.0")
         self.assertEqual(
             set(cmds.pluginInfo("yddColliders", query=True, dependNode=True)),
-            {"yddBellCollider", "yddPlaneCollider", "yddSkirtBellCollider", "yddSkirtCollideDeformer", "yddSkirtWaveDeformer"},
+            {
+                "yddBellCollider",
+                "yddPlaneCollider",
+                "yddSkirtBellCollider",
+                "yddSkirtCollideDeformer",
+                "yddSkirtWaveDeformer",
+                "yddSkirtSurfaceFit",
+            },
         )
 
     def test_node_names_ids_kinds_and_draw_classification(self):
@@ -27,6 +34,7 @@ class RegistrationTests(unittest.TestCase):
             ("yddSkirtBellCollider", 0x0007DD02, om.MFn.kLocator, "drawdb/geometry/yddSkirtBellCollider"),
             ("yddSkirtCollideDeformer", 0x0007DD03, om.MFn.kGeometryFilt, None),
             ("yddSkirtWaveDeformer", 0x0007DD04, om.MFn.kGeometryFilt, None),
+            ("yddSkirtSurfaceFit", 0x0007DD05, om.MFn.kDependencyNode, ""),
         ):
             with self.subTest(node=name):
                 node = cmds.createNode(name)
@@ -35,8 +43,16 @@ class RegistrationTests(unittest.TestCase):
                 self.assertEqual(fn.typeName, name)
                 self.assertEqual(fn.typeId.id(), type_id)
                 self.assertTrue(obj.hasFn(kind))
-                if classification is not None:
+                if classification == "":
+                    self.assertEqual(om.MFnDependencyNode.classification(name), "")
+                elif classification is not None:
                     self.assertIn(classification, om.MFnDependencyNode.classification(name).split(":"))
+
+    def test_skirt_nodes_have_no_collision_attribute(self):
+        for node_type in ("yddSkirtBellCollider", "yddSkirtCollideDeformer"):
+            with self.subTest(node_type=node_type):
+                node = cmds.createNode(node_type)
+                self.assertNotIn("collision", cmds.listAttr(node))
 
     def test_public_creator_uses_prefixed_custom_node_stems(self):
         self.assertEqual(yddColliders.WINDOW_ID, "yddBellColliderUI")

@@ -18,15 +18,26 @@
 #include <maya/MPoint.h>
 #include <maya/MVector.h>
 
+#include <tbb/blocked_range.h>
+#include <tbb/cache_aligned_allocator.h>
+#include <tbb/parallel_for.h>
+#include <tbb/task_group.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#if defined(_M_X64) || defined(__SSE2__)
+#include <emmintrin.h>
+#define YDD_SURFACE_SSE2 1
+#endif
 #include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <type_traits>
 #include <vector>
 #include <utility>
 
@@ -40,7 +51,7 @@ struct SkirtCollideSurfaceTopology
 {
     struct Sample
     {
-        double u, v;
+        double u, v, quadratureWeight;
         int tensorBegin, tensorEnd, rowBegin, rowEnd, betaBegin, betaEnd;
     };
     struct Tensor
@@ -74,7 +85,6 @@ struct SkirtCollideSurfaceTopology
     std::vector<Group> groups;
     std::vector<EdgeSource> edgeSources;
     std::vector<Attachment> attachments;
-    std::size_t termCapacity = 0;
 };
 
 struct SkirtCollideInputSnapshot
@@ -122,6 +132,38 @@ struct SkirtCollideEvaluation
 {
     SkirtCollideInputSnapshot input;
     MPointArray output;
+};
+
+struct SkirtCollideSurfacePreparation
+{
+    std::shared_ptr<const SkirtCollideSurfaceTopology> topology;
+    std::vector<double> weights, rowBasis, beta, denominators;
+    std::vector<MPoint> restPoints, sampleRest;
+    std::vector<double> restKey;
+    std::vector<double> radii, edges;
+
+    bool matches(const std::shared_ptr<const SkirtCollideSurfaceTopology>& candidate,
+                 const MPointArray& cvs, const std::vector<MPoint>& rest,
+                 const std::vector<double>& candidateRestKey) const
+    {
+        if (topology != candidate || restKey.size() != candidateRestKey.size() ||
+            std::memcmp(restKey.data(), candidateRestKey.data(), restKey.size() * sizeof(double)) != 0 ||
+            weights.size() != cvs.length() || restPoints.size() != rest.size())
+            return false;
+        for (unsigned int i = 0; i < cvs.length(); ++i)
+        {
+            const double weight = cvs[i].w;
+            if (std::memcmp(&weights[i], &weight, sizeof(double)) != 0)
+                return false;
+        }
+        for (std::size_t i = 0; i < rest.size(); ++i)
+            if (std::memcmp(&restPoints[i].x, &rest[i].x, sizeof(double)) != 0 ||
+                std::memcmp(&restPoints[i].y, &rest[i].y, sizeof(double)) != 0 ||
+                std::memcmp(&restPoints[i].z, &rest[i].z, sizeof(double)) != 0 ||
+                std::memcmp(&restPoints[i].w, &rest[i].w, sizeof(double)) != 0)
+                return false;
+        return true;
+    }
 };
 
 MTypeId SkirtCollideDeformer::typeId(PluginIdentity::kSkirtCollideTypeId);
@@ -355,31 +397,178 @@ void couple(std::map<int, PointState> &points, const std::vector<LegSegment> &re
 }
 
 
+} // namespace
+
 struct SurfaceContact
 {
-    MVector normal = MVector(0.0, 0.0, 0.0);
+    LegVec3 normal;
     double distance = 0.0, weight = 0.0, cache = 0.0;
 };
 
-struct SurfaceSample
+struct SurfaceSamples
 {
-    MPoint point = MPoint(0.0, 0.0, 0.0), rest = MPoint(0.0, 0.0, 0.0);
-    double denominator = 0.0;
-    SurfaceContact contacts[2];
+    void reset(std::size_t count)
+    {
+        points.resize(count);
+        rests.resize(count);
+        denominators.resize(count);
+        std::fill(denominators.begin(), denominators.end(), 0.0);
+        contacts.resize(count * 2);
+    }
+
+    std::size_t size() const { return points.size(); }
+    SurfaceContact& contact(std::size_t sample, int side) { return contacts[sample * 2 + side]; }
+    const SurfaceContact& contact(std::size_t sample, int side) const { return contacts[sample * 2 + side]; }
+
+    std::vector<LegVec3> points, rests;
+    std::vector<double> denominators;
+    std::vector<SurfaceContact, tbb::cache_aligned_allocator<SurfaceContact>> contacts;
 };
 
 struct SurfaceGroup
 {
     double paint = 1.0, diagonal = 0.0;
-    MVector value = MVector(0.0, 0.0, 0.0);
+    LegVec3 value;
 };
 
-struct SurfaceTerm
+struct SurfacePoint
 {
-    MVector normal;
-    double target, weight, basis;
-    bool active;
+    LegVec3 point, restPoint;
+    double q = 0.0, radius = 0.0, weight = 0.0;
+    bool finite = false;
 };
+
+struct SurfaceTerms
+{
+    void resize(std::size_t capacity)
+    {
+        normalX.resize(capacity);
+        normalY.resize(capacity);
+        normalZ.resize(capacity);
+        target.resize(capacity);
+        weight.resize(capacity);
+        basis.resize(capacity);
+        contactIndex.resize(capacity);
+        active.resize(capacity);
+    }
+
+    std::vector<double> normalX, normalY, normalZ, target, weight, basis;
+    std::vector<std::size_t> contactIndex;
+    std::vector<char> active;
+
+    double dot(std::size_t i, const LegVec3& value) const
+    {
+        return normalX[i] * value.x + normalY[i] * value.y + normalZ[i] * value.z;
+    }
+
+    void dots(const LegVec3& value, std::size_t begin, std::size_t count, double* result) const
+    {
+        std::size_t j = 0;
+#ifdef YDD_SURFACE_SSE2
+        const __m128d x = _mm_set1_pd(value.x), y = _mm_set1_pd(value.y), z = _mm_set1_pd(value.z);
+        for (; j + 1 < count; j += 2)
+        {
+            const std::size_t i = begin + j;
+            const __m128d product = _mm_add_pd(
+                _mm_add_pd(_mm_mul_pd(_mm_loadu_pd(normalX.data() + i), x),
+                           _mm_mul_pd(_mm_loadu_pd(normalY.data() + i), y)),
+                _mm_mul_pd(_mm_loadu_pd(normalZ.data() + i), z));
+            _mm_storeu_pd(result + j, product);
+        }
+#endif
+        for (; j < count; ++j)
+            result[j] = dot(begin + j, value);
+    }
+
+    void residuals(const LegVec3& value, std::size_t begin, std::size_t count,
+                   double* result, bool positivePart) const
+    {
+        std::size_t j = 0;
+#ifdef YDD_SURFACE_SSE2
+        const __m128d x = _mm_set1_pd(value.x), y = _mm_set1_pd(value.y), z = _mm_set1_pd(value.z);
+        const __m128d zero = _mm_setzero_pd();
+        for (; j + 1 < count; j += 2)
+        {
+            const std::size_t i = begin + j;
+            const __m128d product = _mm_add_pd(
+                _mm_add_pd(_mm_mul_pd(_mm_loadu_pd(normalX.data() + i), x),
+                           _mm_mul_pd(_mm_loadu_pd(normalY.data() + i), y)),
+                _mm_mul_pd(_mm_loadu_pd(normalZ.data() + i), z));
+            const __m128d residual = _mm_sub_pd(_mm_loadu_pd(target.data() + i),
+                                                 _mm_mul_pd(_mm_loadu_pd(basis.data() + i), product));
+            _mm_storeu_pd(result + j, positivePart ? _mm_and_pd(_mm_cmpgt_pd(residual, zero), residual) : residual);
+        }
+#endif
+        for (; j < count; ++j)
+        {
+            const std::size_t i = begin + j;
+            const double residual = target[i] - basis[i] * dot(i, value);
+            result[j] = positivePart ? (std::max)(0.0, residual) : residual;
+        }
+    }
+};
+
+constexpr std::size_t kSurfaceChunkSize = 32;
+
+struct alignas(64) SurfaceChunkScratch
+{
+    LegScratch value;
+    std::array<std::size_t, kSurfaceChunkSize> deferredSamples;
+    std::size_t deferredCount = 0;
+    bool invalid = false;
+};
+
+struct SkirtCollideSurfaceWorkspace
+{
+    std::vector<MPoint> restPoints;
+    std::vector<char> restValid, members;
+    std::vector<int> membership;
+    std::vector<double> paint;
+    std::vector<std::pair<unsigned int, double>> rawPaint;
+    LegCapsuleColumns capsuleColumns[2];
+    std::vector<SurfacePoint> points;
+    std::vector<SurfaceGroup> groups;
+    SurfaceSamples samples;
+    SurfaceTerms terms;
+    std::vector<double> edges, rows, beta, termScratch;
+    std::vector<std::size_t> groupCounts;
+    std::vector<std::array<LegSampleTransport, 2>> transports;
+    std::vector<SurfaceChunkScratch, tbb::cache_aligned_allocator<SurfaceChunkScratch>> chunkScratch;
+    std::vector<std::array<double, 2>> capsuleGaps;
+    std::vector<std::array<char, 2>> deferred;
+
+    void reset(std::size_t sampleCount, std::size_t slotCount, std::size_t groupCount,
+               std::size_t maxGroupSlots, std::size_t edgeCount, std::size_t rowCount,
+               std::size_t betaCount, std::size_t chunkCount)
+    {
+        samples.reset(sampleCount);
+        terms.resize(slotCount);
+        edges.resize(edgeCount);
+        rows.resize(rowCount);
+        std::fill(rows.begin(), rows.end(), 0.0);
+        beta.resize(betaCount);
+        std::fill(beta.begin(), beta.end(), 0.0);
+        termScratch.resize(maxGroupSlots);
+        groupCounts.resize(groupCount);
+        groups.resize(groupCount);
+        std::fill(groups.begin(), groups.end(), SurfaceGroup{});
+        transports.resize(sampleCount);
+        std::fill(transports.begin(), transports.end(), std::array<LegSampleTransport, 2>{});
+        if (chunkScratch.size() < chunkCount)
+            chunkScratch.resize(chunkCount);
+        capsuleGaps.resize(sampleCount);
+        deferred.resize(sampleCount);
+    }
+};
+
+struct SkirtCollideSurfaceWorkspacePool
+{
+    std::mutex mutex;
+    std::vector<std::unique_ptr<SkirtCollideSurfaceWorkspace>> idle;
+};
+
+namespace
+{
 
 void warnInvalidBasis(const MObject& node)
 {
@@ -416,6 +605,26 @@ std::vector<double> spanSites(const std::vector<double>& knots, int degree, int 
         if (knots[i + 1] > knots[i])
             for (int k = 1; k <= divisions; ++k)
                 result.push_back(knots[i] + (knots[i + 1] - knots[i]) * (k - 0.5) / divisions);
+    return result;
+}
+
+struct QuadratureSite
+{
+    double value, weight;
+};
+
+std::vector<QuadratureSite> spanGaussSites(const std::vector<double>& knots, int degree, int count)
+{
+    std::vector<QuadratureSite> result;
+    const double offset = 0.5 * std::sqrt(3.0 / 5.0);
+    for (int i = degree; i < count; ++i)
+        if (knots[i + 1] > knots[i])
+        {
+            const double start = knots[i], width = knots[i + 1] - start;
+            result.push_back({start + width * (0.5 - offset), 10.0 / 9.0});
+            result.push_back({start + width * 0.5, 16.0 / 9.0});
+            result.push_back({start + width * (0.5 + offset), 10.0 / 9.0});
+        }
     return result;
 }
 
@@ -545,7 +754,7 @@ bool buildSurfaceTopology(SkirtCollideSurfaceTopology& topology)
             edges.begin());
 
     auto us = spanSites(t.ku, du, nu, 2);
-    const auto vs = spanSites(t.kv, dv, nv, 4);
+    const auto vs = spanGaussSites(t.kv, dv, nv);
     if (!pu)
     {
         us.push_back(t.ku[du]);
@@ -562,12 +771,13 @@ bool buildSurfaceTopology(SkirtCollideSurfaceTopology& topology)
     for (double u : us)
     {
         const int firstU = splineBasis(t.ku, du, nu, u, bu);
-        for (double v : vs)
+        for (const auto& vSite : vs)
         {
-            const int firstV = splineBasis(t.kv, dv, nv, v, bv);
+            const int firstV = splineBasis(t.kv, dv, nv, vSite.value, bv);
             SkirtCollideSurfaceTopology::Sample sample;
             sample.u = u;
-            sample.v = v;
+            sample.v = vSite.value;
+            sample.quadratureWeight = vSite.weight;
             sample.tensorBegin = static_cast<int>(t.tensors.size());
             sample.rowBegin = static_cast<int>(t.rows.size());
             sample.betaBegin = static_cast<int>(t.betaGroups.size());
@@ -614,7 +824,6 @@ bool buildSurfaceTopology(SkirtCollideSurfaceTopology& topology)
     int attachmentOffset = 0;
     for (auto& group : t.groups)
     {
-        t.termCapacity = (std::max)(t.termCapacity, static_cast<std::size_t>(group.attachmentEnd) * 2);
         group.attachmentBegin = attachmentOffset;
         group.attachmentEnd += attachmentOffset;
         attachmentOffset = group.attachmentEnd;
@@ -629,9 +838,40 @@ bool buildSurfaceTopology(SkirtCollideSurfaceTopology& topology)
     return true;
 }
 
+template<class T>
+std::size_t vectorPayloadBytes(const std::vector<T>& values)
+{
+    return values.capacity() * sizeof(T);
+}
+
+std::size_t topologyPayloadBytes(const SkirtCollideSurfaceTopology& t)
+{
+    return sizeof(t) + vectorPayloadBytes(t.ku) + vectorPayloadBytes(t.kv) +
+           vectorPayloadBytes(t.canonical) + vectorPayloadBytes(t.groupOf) +
+           vectorPayloadBytes(t.betaGroups) + vectorPayloadBytes(t.edgeGroups) +
+           vectorPayloadBytes(t.samples) + vectorPayloadBytes(t.tensors) + vectorPayloadBytes(t.rows) +
+           vectorPayloadBytes(t.groups) + vectorPayloadBytes(t.edgeSources) +
+           vectorPayloadBytes(t.attachments);
+}
+
+std::size_t preparationPayloadBytes(const SkirtCollideSurfacePreparation& p)
+{
+    return sizeof(p) + vectorPayloadBytes(p.weights) + vectorPayloadBytes(p.rowBasis) +
+           vectorPayloadBytes(p.beta) + vectorPayloadBytes(p.denominators) +
+           vectorPayloadBytes(p.restPoints) + vectorPayloadBytes(p.sampleRest) +
+           vectorPayloadBytes(p.restKey) + vectorPayloadBytes(p.radii) + vectorPayloadBytes(p.edges);
+}
+
+bool topologyMatches(const SkirtCollideSurfaceTopology& a, const SkirtCollideSurfaceTopology& b)
+{
+    return a.nu == b.nu && a.nv == b.nv && a.du == b.du && a.dv == b.dv &&
+           a.formU == b.formU && a.formV == b.formV && a.closedU == b.closedU &&
+           a.ku == b.ku && a.kv == b.kv;
+}
+
 std::shared_ptr<const SkirtCollideSurfaceTopology> surfaceTopologyFor(
-    MFnNurbsSurface& surface, bool closedU, std::mutex& mutex,
-    std::shared_ptr<const SkirtCollideSurfaceTopology>& cache)
+    MFnNurbsSurface& surface, bool closedU,
+    SkirtSurfaceCache<SkirtCollideSurfaceTopology, SkirtCollideSurfacePreparation>& cache)
 {
     MDoubleArray mayaU, mayaV;
     if (!surface.getKnotsInU(mayaU) || !surface.getKnotsInV(mayaV))
@@ -648,67 +888,68 @@ std::shared_ptr<const SkirtCollideSurfaceTopology> surfaceTopologyFor(
     key.kv = fullKnots(mayaV);
     // Only degree, knots, form, CV counts and closedU invalidate topology. Rational
     // weights and all evaluation state stay outside the immutable, per-node cache.
-    const std::lock_guard<std::mutex> lock(mutex);
-    if (cache && cache->nu == key.nu && cache->nv == key.nv && cache->du == key.du && cache->dv == key.dv &&
-        cache->formU == key.formU && cache->formV == key.formV && cache->closedU == key.closedU &&
-        cache->ku == key.ku && cache->kv == key.kv)
-        return cache;
+    if (auto cached = cache.findTopology(key, topologyMatches))
+        return cached;
     auto built = std::make_shared<SkirtCollideSurfaceTopology>(std::move(key));
     if (!buildSurfaceTopology(*built))
         return {};
-    cache = built;
-    return cache;
+    return cache.publishTopology(built, topologyPayloadBytes(*built), topologyMatches);
 }
 
-MVector solveSurfaceGroup(const SurfaceGroup& group, const SkirtCollideSurfaceTopology::Group& layout,
+LegVec3 solveSurfaceGroup(const SurfaceGroup& group, const SkirtCollideSurfaceTopology::Group& layout,
                           const SkirtCollideSurfaceTopology& topology, const std::vector<double>& edges,
-                          const std::vector<SurfaceGroup>& groups, SurfaceTerm* terms, std::size_t count)
+                          const std::vector<SurfaceGroup>& groups, SurfaceTerms& terms, std::size_t begin, std::size_t count, double* residualScratch)
 {
-    MVector rhs0(0.0, 0.0, 0.0);
+    LegVec3 rhs0;
     for (int e = layout.edgeBegin; e < layout.edgeEnd; ++e)
         rhs0 += edges[e] * groups[topology.edgeGroups[e]].value;
-    const auto objective = [&](const MVector& z) {
+    const auto objective = [&](const LegVec3& z) {
         double value = layout.mass * (z * z);
         for (int e = layout.edgeBegin; e < layout.edgeEnd; ++e)
         {
-            const MVector offset = z - groups[topology.edgeGroups[e]].value;
+            const LegVec3 offset = z - groups[topology.edgeGroups[e]].value;
             value += edges[e] * (offset * offset);
         }
-        for (std::size_t i = 0; i < count; ++i)
+        terms.residuals(z, begin, count, residualScratch, true);
+        for (std::size_t j = 0; j < count; ++j)
         {
-            const SurfaceTerm& term = terms[i];
-            const double hinge = (std::max)(0.0, term.target - term.basis * (term.normal * z));
-            value += term.weight * hinge * hinge;
+            const std::size_t i = begin + j;
+            value += terms.weight[i] * residualScratch[j] * residualScratch[j];
         }
         return value;
     };
-    const auto consistent = [&](const MVector& z) {
-        for (std::size_t i = 0; i < count; ++i)
-            if (terms[i].active != (terms[i].target - terms[i].basis * (terms[i].normal * z) > 0.0))
+    const auto consistent = [&](const LegVec3& z) {
+        for (std::size_t j = 0; j < count; ++j)
+        {
+            const std::size_t i = begin + j;
+            if (static_cast<bool>(terms.active[i]) != (terms.target[i] - terms.basis[i] * terms.dot(i, z) > 0.0))
                 return false;
+        }
         return true;
     };
-    MVector z = group.value;
+    LegVec3 z = group.value;
     for (int iteration = 0; iteration < 50; ++iteration)
     {
         const double diagonal = group.diagonal;
         double matrix[3][3] = {{diagonal, 0.0, 0.0}, {0.0, diagonal, 0.0}, {0.0, 0.0, diagonal}};
-        MVector rhs = rhs0;
-        for (std::size_t i = 0; i < count; ++i)
+        LegVec3 rhs = rhs0;
+        terms.residuals(z, begin, count, residualScratch, false);
+        for (std::size_t j = 0; j < count; ++j)
         {
-            SurfaceTerm& term = terms[i];
-            term.active = term.target - term.basis * (term.normal * z) > 0.0;
-            if (!term.active)
+            const std::size_t i = begin + j;
+            terms.active[i] = residualScratch[j] > 0.0;
+            if (!terms.active[i])
                 continue;
+            const double normal[3] = {terms.normalX[i], terms.normalY[i], terms.normalZ[i]};
             for (int r = 0; r < 3; ++r)
             {
-                rhs[r] += term.weight * term.basis * term.target * term.normal[r];
+                rhs[r] += terms.weight[i] * terms.basis[i] * terms.target[i] * normal[r];
                 for (int c = 0; c < 3; ++c)
-                    matrix[r][c] += term.weight * term.basis * term.basis * term.normal[r] * term.normal[c];
+                    matrix[r][c] += terms.weight[i] * terms.basis[i] * terms.basis[i] * normal[r] * normal[c];
             }
         }
         const double det = determinant(matrix);
-        MVector candidate;
+        LegVec3 candidate;
         for (int k = 0; k < 3; ++k)
         {
             double replaced[3][3];
@@ -720,17 +961,19 @@ MVector solveSurfaceGroup(const SurfaceGroup& group, const SkirtCollideSurfaceTo
         const double oldValue = objective(z);
         if (objective(candidate) >= oldValue)
         {
-            const MVector step = candidate - z;
+            const LegVec3 step = candidate - z;
             candidate = z;
             double scale = 0.5;
             for (int k = 1; k <= 30; ++k, scale *= 0.5)
             {
-                const MVector trial = z + scale * step;
+                const LegVec3 trial = z + scale * step;
                 if (objective(trial) < oldValue)
                 {
                     candidate = trial;
                     break;
                 }
+                if (k == 1 && step.x == 0.0 && step.y == 0.0 && step.z == 0.0)
+                    break;
             }
         }
         const bool done = consistent(candidate) || (candidate - z).length() <= 1e-12 * (1.0 + z.length());
@@ -741,23 +984,40 @@ MVector solveSurfaceGroup(const SurfaceGroup& group, const SkirtCollideSurfaceTo
     return z;
 }
 
-struct SurfacePoint
-{
-    MPoint point, restPoint;
-    double q = 0.0, radius = 0.0;
-    bool finite = false;
-};
-
-bool coupleSurface(const SkirtCollideSurfaceTopology &topology, const MPointArray &cvs,
+bool coupleSurface(const SkirtCollideSurfaceTopology &topology,
                    std::vector<SurfacePoint> &points, const Leg legs[2], const std::vector<LegSegment> &restCylinders,
                    const MPoint &waist, const MVector &axis, double kappa, std::vector<SurfaceGroup> &groups,
-                   int sweeps, int regenerations)
+                   const SkirtCollideSurfacePreparation* prepared,
+                   SkirtCollideSurfacePreparation* built, SkirtCollideSurfaceWorkspace& workspace)
 {
     const auto& t = topology;
-    for (unsigned int i = 0; i < cvs.length(); ++i)
-        if (!std::isfinite(cvs[i].w) || cvs[i].w <= 0.0)
+    const LegVec3 waistPosition = legPoint(waist);
+    const LegVec3 axisDirection = legVector(axis);
+    for (const auto& point : points)
+        if (!std::isfinite(point.weight) || point.weight <= 0.0)
             return false;
-    groups.resize(t.groups.size());
+    std::size_t maxGroupSlots = 0;
+    for (const auto& layout : t.groups)
+        maxGroupSlots = (std::max)(maxGroupSlots,
+                                  static_cast<std::size_t>(layout.attachmentEnd - layout.attachmentBegin) * 2);
+    constexpr std::size_t chunkSize = kSurfaceChunkSize;
+    const std::size_t chunkCount = (t.samples.size() + chunkSize - 1) / chunkSize;
+    workspace.reset(t.samples.size(), t.attachments.size() * 2, t.groups.size(), maxGroupSlots,
+                    t.edgeGroups.size(), prepared ? 0 : t.rows.size(), t.betaGroups.size(), chunkCount);
+    auto& samples = workspace.samples;
+    auto& terms = workspace.terms;
+    auto& edges = workspace.edges;
+    auto& rows = workspace.rows;
+    auto& beta = workspace.beta;
+    auto& groupCounts = workspace.groupCounts;
+    auto& termScratch = workspace.termScratch;
+    auto& transports = workspace.transports;
+    auto& chunkScratch = workspace.chunkScratch;
+    auto& capsuleGaps = workspace.capsuleGaps;
+    auto& deferred = workspace.deferred;
+    // reset() has initialized each group's paint, diagonal and displacement.
+    if (built)
+        built->radii.resize(points.size());
     for (std::size_t i = 0; i < points.size(); ++i)
     {
         if (t.canonical[i] != static_cast<int>(i))
@@ -766,168 +1026,249 @@ bool coupleSurface(const SkirtCollideSurfaceTopology &topology, const MPointArra
         auto& group = groups[t.groupOf[i]];
         group.paint = (std::min)(group.paint, point.q);
         if (point.finite)
-            point.radius = legLocalRadius(restCylinders, legPoint(point.restPoint));
+        {
+            point.radius = prepared ? prepared->radii[i] : legLocalRadius(restCylinders, point.restPoint);
+            if (built)
+                built->radii[i] = point.radius;
+        }
     }
-    std::vector<double> edges(t.edgeGroups.size(), 0.0);
-    for (const auto& source : t.edgeSources)
-    {
-        const auto& point = points[source.a];
-        const auto& other = points[source.b];
-        if (!point.finite || !other.finite)
-            continue;
-        const double scale = kappa * (point.radius + other.radius) / 2.0;
-        const MVector offset = point.restPoint - other.restPoint;
-        edges[source.edge] +=
-            kappa > 0.0 && !restCylinders.empty() ? scale * scale / (std::max)(offset * offset, 1e-12) : 0.0;
-    }
+    if (prepared)
+        edges = prepared->edges;
+    else
+        std::fill(edges.begin(), edges.end(), 0.0);
+    if (!prepared)
+        for (const auto& source : t.edgeSources)
+        {
+            const auto& point = points[source.a];
+            const auto& other = points[source.b];
+            if (!point.finite || !other.finite)
+                continue;
+            const double scale = kappa * (point.radius + other.radius) / 2.0;
+            const LegVec3 offset = point.restPoint - other.restPoint;
+            edges[source.edge] +=
+                kappa > 0.0 && !restCylinders.empty() ? scale * scale / (std::max)(offset * offset, 1e-12) : 0.0;
+        }
+    if (built)
+        built->edges = edges;
     for (std::size_t g = 0; g < groups.size(); ++g)
     {
         groups[g].diagonal = t.groups[g].mass;
         for (int e = t.groups[g].edgeBegin; e < t.groups[g].edgeEnd; ++e)
             groups[g].diagonal += edges[e];
     }
-    std::vector<SurfaceSample> samples(t.samples.size());
-    std::vector<double> rows(t.rows.size(), 0.0), beta(t.betaGroups.size(), 0.0);
-    for (std::size_t s = 0; s < samples.size(); ++s)
+    if (prepared)
+        beta = prepared->beta;
+    if (built)
     {
-        auto& sample = samples[s];
+        built->rowBasis.resize(t.rows.size());
+        built->denominators.resize(t.samples.size());
+        built->sampleRest.resize(t.samples.size());
+    }
+    const auto prepareSample = [&](std::size_t s) {
         const auto& layout = t.samples[s];
         double total = 0.0;
-        for (int k = layout.tensorBegin; k < layout.tensorEnd; ++k)
+        if (!prepared)
         {
-            const auto& coefficient = t.tensors[k];
-            const double w = coefficient.basis * cvs[coefficient.cv].w;
-            rows[coefficient.row] += w;
-            total += w;
+            for (int k = layout.tensorBegin; k < layout.tensorEnd; ++k)
+            {
+                const auto& coefficient = t.tensors[k];
+                const double w = coefficient.basis * points[coefficient.cv].weight;
+                rows[coefficient.row] += w;
+                total += w;
+            }
+            if (!std::isfinite(total) || total <= 0.0)
+                return false;
         }
-        if (!std::isfinite(total) || total <= 0.0)
-            return false;
         double sum = 0.0;
-        MVector p(0.0, 0.0, 0.0), r(0.0, 0.0, 0.0);
+        LegVec3 p, r;
         for (int k = layout.rowBegin; k < layout.rowEnd; ++k)
         {
-            const double b = rows[k] / total;
-            if (!std::isfinite(b) || b < 0.0)
-                return false;
-            sum += b;
-            sample.denominator += b * b;
+            const double b = prepared ? prepared->rowBasis[k] : rows[k] / total;
+            if (!prepared)
+            {
+                if (!std::isfinite(b) || b < 0.0)
+                    return false;
+                sum += b;
+                samples.denominators[s] += b * b;
+                if (built)
+                    built->rowBasis[k] = b;
+            }
             const auto& point = points[t.rows[k].cv];
-            p += b * MVector(point.point.x, point.point.y, point.point.z);
-            r += b * MVector(point.restPoint.x, point.restPoint.y, point.restPoint.z);
-            beta[t.rows[k].beta] += b;
+            p += b * point.point;
+            if (!prepared)
+            {
+                r += b * point.restPoint;
+                beta[t.rows[k].beta] += b;
+            }
         }
-        if (std::abs(sum - 1.0) > 1e-9)
+        if (!prepared && std::abs(sum - 1.0) > 1e-9)
             return false;
-        sample.point = MPoint(p);
-        sample.rest = MPoint(r);
-    }
-    std::vector<SurfaceTerm> terms(t.termCapacity);
-    std::vector<std::array<LegSampleTransport, 2>> transports(samples.size());
-    LegScratch scratch;
+        samples.points[s] = p;
+        if (prepared)
+        {
+            samples.denominators[s] = prepared->denominators[s];
+            samples.rests[s] = legPoint(prepared->sampleRest[s]);
+        }
+        else
+        {
+            samples.rests[s] = r;
+            if (built)
+                built->denominators[s] = samples.denominators[s];
+        }
+        return true;
+    };
     bool mixedPaint = false;
     for (const auto& group : groups)
         if (group.paint > 0.0 && group.paint < 1.0)
             mixedPaint = true;
-    std::vector<MVector> displacements(samples.size());
-    std::vector<double> startNorms(samples.size(), 0.0);
-    std::vector<char> sampleValid(samples.size(), 0);
-    std::vector<std::array<double, 2>> capsuleGaps(samples.size());
-    std::vector<std::array<char, 2>> deferred(samples.size());
-    for (int block = 0; block <= regenerations; ++block)
+    const LegContactGeometry contactGeometry[2] = {legPrepareContactGeometry(legs[0], kappa),
+                                                    legPrepareContactGeometry(legs[1], kappa)};
+    workspace.capsuleColumns[0].prepare(contactGeometry[0]);
+    workspace.capsuleColumns[1].prepare(contactGeometry[1]);
+    bool anyDeferred = false;
+    for (auto& gaps : capsuleGaps)
     {
-        for (auto& gaps : capsuleGaps)
+        gaps[0] = gaps[1] = 0.0;
+    }
+    for (auto& flags : deferred)
+    {
+        flags[0] = flags[1] = 0;
+    }
+    const auto processSample = [&](std::size_t s, SurfaceChunkScratch& chunkData)
+    {
+        if (!prepareSample(s))
         {
-            gaps[0] = gaps[1] = 0.0;
+            chunkData.invalid = true;
+            return;
         }
-        for (auto& flags : deferred)
-        {
-            flags[0] = flags[1] = 0;
-        }
-        for (std::size_t s = 0; s < samples.size(); ++s)
-        {
-            auto& sample = samples[s];
-            MVector displacement(0.0, 0.0, 0.0);
-            for (int b = t.samples[s].betaBegin; b < t.samples[s].betaEnd; ++b)
-                displacement += beta[b] * groups[t.betaGroups[b]].value;
-            displacements[s] = displacement;
-            const MPoint position = sample.point + displacement;
-            const MVector offset = sample.rest - waist;
-            MVector radial = offset - axis * (offset * axis);
-            const bool valid = isFinitePoint(position) && isFinitePoint(sample.rest) && radial.length() >= 1e-8;
-            sampleValid[s] = valid ? 1 : 0;
-            startNorms[s] = valid ? displacement.length() : 0.0;
-            if (valid)
-                radial.normalize();
-            if (block == 0 && valid)
-                for (int side = 0; side < 2; ++side)
-                    legSampleTransport(legs[side], legPoint(sample.rest), legVector(radial), transports[s][side]);
+        LegScratch& scratch = chunkData.value;
+        const LegVec3 position = samples.points[s];
+        const LegVec3 offset = samples.rests[s] - waistPosition;
+        LegVec3 radial = offset - axisDirection * (offset * axisDirection);
+        const bool valid = finiteVector(position) && finiteVector(samples.rests[s]) && radial.length() >= 1e-8;
+        if (valid)
+            radial.normalize();
+        if (valid)
             for (int side = 0; side < 2; ++side)
-            {
-                SurfaceContact& contact = sample.contacts[side];
-                contact = SurfaceContact();
-                if (!valid)
-                    continue;
-                bool inside = false;
-                for (const auto& segment : legs[side].segments)
-                    if (legLocal(segment.current, legPoint(position)).phi <= 0.0)
-                    {
-                        inside = true;
-                        break;
-                    }
-                LegContact constraint;
-                if (inside)
-                {
-                    if (legConstraint(legs[side], legPoint(position), transports[s][side], kappa, constraint,
-                                      scratch) &&
-                        constraint.weight != 0.0)
-                    {
-                        contact.normal = mayaLegVector(constraint.normal);
-                        contact.cache = constraint.normal * legVector(displacement);
-                        contact.distance = constraint.distance + contact.cache;
-                        contact.weight = 4.0 * constraint.weight / sample.denominator;
-                    }
-                    continue;
-                }
-                const double gap = mixedPaint ? 0.0 : legCapsuleDistance(legs[side], legPoint(position));
-                capsuleGaps[s][side] = gap;
-                const double scaled = gap * (1.0 - 1e-9);
-                const double start = startNorms[s];
-                if (mixedPaint || !std::isfinite(gap) || !std::isfinite(start) || !(1.25 * scaled > 1.25 * start))
-                {
-                    if (legConstraint(legs[side], legPoint(position), transports[s][side], kappa, constraint,
-                                      scratch) &&
-                        constraint.weight != 0.0)
-                    {
-                        contact.normal = mayaLegVector(constraint.normal);
-                        contact.cache = constraint.normal * legVector(displacement);
-                        contact.distance = constraint.distance + contact.cache;
-                        contact.weight = 4.0 * constraint.weight / sample.denominator;
-                    }
-                    continue;
-                }
-                deferred[s][side] = 1;
-            }
-        }
-        double bound = 0.0;
-        for (std::size_t g = 0; g < groups.size(); ++g)
-            bound += static_cast<double>(t.groups[g].mass) * (groups[g].value * groups[g].value);
-        for (std::size_t g = 0; g < groups.size(); ++g)
-            for (int e = t.groups[g].edgeBegin; e < t.groups[g].edgeEnd; ++e)
-            {
-                const MVector offset = groups[g].value - groups[topology.edgeGroups[e]].value;
-                bound += 0.5 * edges[e] * (offset * offset);
-            }
-        for (std::size_t s = 0; s < samples.size(); ++s)
-            for (int side = 0; side < 2; ++side)
-            {
-                const SurfaceContact& contact = samples[s].contacts[side];
-                if (contact.weight == 0.0)
-                    continue;
-                const double hinge = (std::max)(0.0, 1.25 * contact.distance - contact.cache);
-                bound += contact.weight * hinge * hinge;
-            }
-        for (std::size_t s = 0; s < samples.size(); ++s)
+                legSampleTransport(legs[side], samples.rests[s], radial, transports[s][side]);
+        for (int side = 0; side < 2; ++side)
         {
+            SurfaceContact& contact = samples.contact(s, side);
+            contact = SurfaceContact();
+            if (!valid)
+                continue;
+            bool inside = false;
+            for (const auto& segment : legs[side].segments)
+                if (legLocalPhi(segment.current, position) <= 0.0)
+                {
+                    inside = true;
+                    break;
+                }
+            LegContact constraint;
+            if (inside)
+            {
+                if (legConstraint(legs[side], position, transports[s][side], kappa, constraint,
+                                  scratch, contactGeometry[side]) &&
+                    constraint.weight != 0.0)
+                {
+                    contact.normal = constraint.normal;
+                    contact.cache = constraint.normal * LegVec3();
+                    contact.distance = constraint.distance + contact.cache;
+                    contact.weight = 4.0 * t.samples[s].quadratureWeight * constraint.weight / samples.denominators[s];
+                }
+                continue;
+            }
+            const double gap = mixedPaint ? 0.0 : legCapsuleDistance(position, workspace.capsuleColumns[side]);
+            capsuleGaps[s][side] = gap;
+            const double scaled = gap * (1.0 - 1e-9);
+            if (mixedPaint || !std::isfinite(gap) || !(1.25 * scaled > 0.0))
+            {
+                if (legConstraint(legs[side], position, transports[s][side], kappa, constraint,
+                                  scratch, contactGeometry[side]) &&
+                    constraint.weight != 0.0)
+                {
+                    contact.normal = constraint.normal;
+                    contact.cache = constraint.normal * LegVec3();
+                    contact.distance = constraint.distance + contact.cache;
+                    contact.weight = 4.0 * t.samples[s].quadratureWeight * constraint.weight / samples.denominators[s];
+                }
+                continue;
+            }
+            deferred[s][side] = 1;
+        }
+        if (deferred[s][0] || deferred[s][1])
+            chunkData.deferredSamples[chunkData.deferredCount++] = s;
+    };
+    const auto processChunk = [&](std::size_t chunk) {
+        SurfaceChunkScratch& chunkData = chunkScratch[chunk];
+        chunkData.deferredCount = 0;
+        chunkData.invalid = false;
+        const std::size_t end = (std::min)((chunk + 1) * chunkSize, samples.size());
+        for (std::size_t s = chunk * chunkSize; s < end; ++s)
+        {
+            processSample(s, chunkData);
+            if (chunkData.invalid)
+                break;
+        }
+    };
+    if (samples.size() < 64)
+        for (std::size_t chunk = 0; chunk < chunkCount; ++chunk)
+            processChunk(chunk);
+    else
+    {
+        tbb::task_group_context context(tbb::task_group_context::isolated,
+                                        tbb::task_group_context::default_traits |
+                                            tbb::task_group_context::fp_settings);
+        context.capture_fp_settings();
+        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, chunkCount, 1),
+                          [&](const tbb::blocked_range<std::size_t>& range) {
+                              for (std::size_t chunk = range.begin(); chunk < range.end(); ++chunk)
+                                  processChunk(chunk);
+                          }, context);
+    }
+    for (std::size_t chunk = 0; chunk < chunkCount; ++chunk)
+        if (chunkScratch[chunk].invalid)
+            return false;
+    if (built)
+    {
+        if (!prepared)
+            for (std::size_t s = 0; s < samples.size(); ++s)
+            {
+                const LegVec3& rest = samples.rests[s];
+                built->sampleRest[s] = MPoint(rest.x, rest.y, rest.z, 1.0);
+            }
+        built->beta = beta;
+    }
+    for (std::size_t chunk = 0; chunk < chunkCount; ++chunk)
+        anyDeferred = anyDeferred || chunkScratch[chunk].deferredCount != 0;
+    double bound = 0.0;
+    if (!anyDeferred)
+        bound = std::numeric_limits<double>::quiet_NaN();
+    else
+    {
+    // Initial group values are zero; a nonfinite edge used to make this bound NaN.
+    for (double edge : edges)
+        if (!std::isfinite(edge))
+        {
+            bound = std::numeric_limits<double>::quiet_NaN();
+            break;
+        }
+    for (std::size_t s = 0; s < samples.size(); ++s)
+        for (int side = 0; side < 2; ++side)
+        {
+            const SurfaceContact& contact = samples.contact(s, side);
+            if (contact.weight == 0.0)
+                continue;
+            const double hinge = (std::max)(0.0, 1.25 * contact.distance - contact.cache);
+            bound += contact.weight * hinge * hinge;
+        }
+    }
+    const auto processDeferredChunk = [&](std::size_t chunk) {
+        SurfaceChunkScratch& chunkData = chunkScratch[chunk];
+        LegScratch& scratch = chunkData.value;
+        for (std::size_t item = 0; item < chunkData.deferredCount; ++item)
+        {
+            const std::size_t s = chunkData.deferredSamples[item];
             double support = 0.0;
             bool supportFinite = std::isfinite(bound);
             for (int b = t.samples[s].betaBegin; b < t.samples[s].betaEnd; ++b)
@@ -949,66 +1290,176 @@ bool coupleSurface(const SkirtCollideSurfaceTopology &topology, const MPointArra
                 if (!deferred[s][side])
                     continue;
                 deferred[s][side] = 0;
-                auto& sample = samples[s];
-                const MPoint position = sample.point + displacements[s];
+                const LegVec3 position = samples.points[s];
                 const double scaled = capsuleGaps[s][side] * (1.0 - 1e-9);
-                const double start = startNorms[s];
-                if (mixedPaint || !std::isfinite(scaled) || !std::isfinite(start) || !std::isfinite(radius) ||
-                    !(1.25 * scaled > 1.25 * start + radius))
+                if (mixedPaint || !std::isfinite(scaled) || !std::isfinite(radius) ||
+                    !(1.25 * scaled > radius))
                 {
                     LegContact constraint;
-                    if (sampleValid[s] &&
-                        legConstraint(legs[side], legPoint(position), transports[s][side], kappa, constraint,
-                                      scratch) &&
-                        constraint.weight != 0.0)
+                    if (legConstraint(legs[side], position, transports[s][side], kappa, constraint,
+                                      scratch, contactGeometry[side]) && constraint.weight != 0.0)
                     {
-                        SurfaceContact& contact = sample.contacts[side];
-                        contact.normal = mayaLegVector(constraint.normal);
-                        contact.cache = constraint.normal * legVector(displacements[s]);
+                        SurfaceContact& contact = samples.contact(s, side);
+                        contact.normal = constraint.normal;
+                        contact.cache = constraint.normal * LegVec3();
                         contact.distance = constraint.distance + contact.cache;
-                        contact.weight = 4.0 * constraint.weight / sample.denominator;
+                        contact.weight = 4.0 * t.samples[s].quadratureWeight * constraint.weight / samples.denominators[s];
                     }
                 }
             }
         }
-        for (int sweep = block * sweeps / (regenerations + 1); sweep < (block + 1) * sweeps / (regenerations + 1); ++sweep)
-            for (std::size_t g = 0; g < groups.size(); ++g)
+    };
+    if (anyDeferred)
+    {
+        if (samples.size() < 64)
+            for (std::size_t chunk = 0; chunk < chunkCount; ++chunk)
+                processDeferredChunk(chunk);
+        else
+        {
+            tbb::task_group_context context(tbb::task_group_context::isolated,
+                                            tbb::task_group_context::default_traits |
+                                                tbb::task_group_context::fp_settings);
+            context.capture_fp_settings();
+            tbb::parallel_for(tbb::blocked_range<std::size_t>(0, chunkCount, 1),
+                              [&](const tbb::blocked_range<std::size_t>& range) {
+                                  for (std::size_t chunk = range.begin(); chunk < range.end(); ++chunk)
+                                      processDeferredChunk(chunk);
+                              }, context);
+        }
+    }
+    const auto fillGroup = [&](std::size_t g) {
+        const auto& layout = t.groups[g];
+        const std::size_t begin = static_cast<std::size_t>(layout.attachmentBegin) * 2;
+        std::size_t count = 0;
+        if (groups[g].paint != 0.0)
+            for (int a = layout.attachmentBegin; a < layout.attachmentEnd; ++a)
             {
-                auto& group = groups[g];
-                const auto& layout = t.groups[g];
-                if (group.paint == 0.0)
-                    continue;
-                std::size_t count = 0;
-                for (int a = layout.attachmentBegin; a < layout.attachmentEnd; ++a)
+                const auto& attachment = t.attachments[a];
+                for (int side = 0; side < 2; ++side)
                 {
-                    const auto& attachment = t.attachments[a];
-                    for (const auto& contact : samples[attachment.sample].contacts)
-                        if (contact.weight != 0.0)
-                        {
-                            SurfaceTerm& term = terms[count++];
-                            term.normal = contact.normal;
-                            term.basis = beta[attachment.beta];
-                            term.weight = contact.weight;
-                            term.target =
-                                1.25 * contact.distance - (contact.cache - term.basis * (contact.normal * group.value));
-                        }
-                }
-                const MVector value =
-                    group.paint * solveSurfaceGroup(group, layout, t, edges, groups, terms.data(), count);
-                const MVector change = value - group.value;
-                group.value = value;
-                for (int a = layout.attachmentBegin; a < layout.attachmentEnd; ++a)
-                {
-                    const auto& attachment = t.attachments[a];
-                    for (auto& contact : samples[attachment.sample].contacts)
-                        contact.cache += beta[attachment.beta] * (contact.normal * change);
+                    const std::size_t contactIndex = static_cast<std::size_t>(attachment.sample) * 2 + side;
+                    const SurfaceContact& contact = samples.contacts[contactIndex];
+                    if (contact.weight == 0.0)
+                        continue;
+                    const std::size_t i = begin + count++;
+                    terms.normalX[i] = contact.normal.x;
+                    terms.normalY[i] = contact.normal.y;
+                    terms.normalZ[i] = contact.normal.z;
+                    terms.basis[i] = beta[attachment.beta];
+                    terms.weight[i] = contact.weight;
+                    terms.contactIndex[i] = contactIndex;
                 }
             }
-    }
+        groupCounts[g] = count;
+    };
+    for (std::size_t g = 0; g < groups.size(); ++g)
+        fillGroup(g);
+    for (int sweep = 0; sweep < 3; ++sweep)
+        for (std::size_t g = 0; g < groups.size(); ++g)
+        {
+            auto& group = groups[g];
+            const auto& layout = t.groups[g];
+            if (group.paint == 0.0)
+                continue;
+            const std::size_t begin = static_cast<std::size_t>(layout.attachmentBegin) * 2;
+            const std::size_t count = groupCounts[g];
+            terms.dots(group.value, begin, count, termScratch.data());
+            for (std::size_t j = 0; j < count; ++j)
+            {
+                const std::size_t i = begin + j;
+                const SurfaceContact& contact = samples.contacts[terms.contactIndex[i]];
+                terms.target[i] =
+                    1.25 * contact.distance - (contact.cache - terms.basis[i] * termScratch[j]);
+            }
+            const LegVec3 value =
+                group.paint * solveSurfaceGroup(group, layout, t, edges, groups,
+                                                terms, begin, count, termScratch.data());
+            const LegVec3 change = value - group.value;
+            group.value = value;
+            terms.dots(change, begin, count, termScratch.data());
+            for (std::size_t j = 0; j < count; ++j)
+            {
+                const std::size_t i = begin + j;
+                SurfaceContact& contact = samples.contacts[terms.contactIndex[i]];
+                contact.cache += terms.basis[i] * termScratch[j];
+            }
+        }
     return true;
 }
 
 } // namespace
+
+SkirtCollideDeformer::SkirtCollideDeformer()
+    : MPxDeformerNode(), restGeometryWarningIssued(false),
+      workspacePool(std::make_shared<SkirtCollideSurfaceWorkspacePool>())
+{
+}
+
+SkirtCollideDeformer::~SkirtCollideDeformer() = default;
+
+std::unique_ptr<SkirtCollideSurfaceWorkspace> SkirtCollideDeformer::acquireWorkspace(
+    const std::shared_ptr<SkirtCollideSurfaceWorkspacePool>& pool)
+{
+    {
+        std::lock_guard<std::mutex> lock(pool->mutex);
+        if (!pool->idle.empty())
+        {
+            auto workspace = std::move(pool->idle.back());
+            pool->idle.pop_back();
+            return workspace;
+        }
+    }
+    return std::unique_ptr<SkirtCollideSurfaceWorkspace>(new SkirtCollideSurfaceWorkspace);
+}
+
+void SkirtCollideDeformer::releaseWorkspace(
+    const std::shared_ptr<SkirtCollideSurfaceWorkspacePool>& pool,
+    std::unique_ptr<SkirtCollideSurfaceWorkspace> workspace) noexcept
+{
+    constexpr std::size_t maxIdle = 2;
+    constexpr std::size_t maxRetainedBytes = 32 * 1024 * 1024;
+    const auto bytes = [](const auto& values) {
+        return values.capacity() * sizeof(typename std::decay<decltype(values)>::type::value_type);
+    };
+    const auto scratchBytes = [&](const LegScratch& scratch) {
+        std::size_t total = bytes(scratch.raySites) + bytes(scratch.intervals);
+        for (const auto& level : scratch.polynomial)
+            total += bytes(level.roots) + bytes(level.sites);
+        return total;
+    };
+    std::size_t retained = bytes(workspace->restPoints) + bytes(workspace->restValid) +
+        bytes(workspace->members) + bytes(workspace->membership) +
+        bytes(workspace->paint) + bytes(workspace->rawPaint) +
+        bytes(workspace->points) + bytes(workspace->groups) +
+        bytes(workspace->samples.points) + bytes(workspace->samples.rests) +
+        bytes(workspace->samples.denominators) + bytes(workspace->samples.contacts) +
+        bytes(workspace->terms.normalX) + bytes(workspace->terms.normalY) +
+        bytes(workspace->terms.normalZ) + bytes(workspace->terms.target) +
+        bytes(workspace->terms.weight) + bytes(workspace->terms.basis) +
+        bytes(workspace->terms.contactIndex) + bytes(workspace->terms.active) +
+        bytes(workspace->edges) + bytes(workspace->rows) + bytes(workspace->beta) +
+        bytes(workspace->termScratch) +
+        bytes(workspace->groupCounts) + bytes(workspace->transports) +
+        bytes(workspace->chunkScratch) + bytes(workspace->capsuleGaps) + bytes(workspace->deferred);
+    for (const auto& chunk : workspace->chunkScratch)
+        retained += scratchBytes(chunk.value);
+    for (const auto& columns : workspace->capsuleColumns)
+        retained += bytes(columns.p0x) + bytes(columns.p0y) + bytes(columns.p0z) +
+                    bytes(columns.spanx) + bytes(columns.spany) + bytes(columns.spanz) +
+                    bytes(columns.length2) + bytes(columns.radius);
+    if (retained > maxRetainedBytes)
+        return;
+    try
+    {
+        std::lock_guard<std::mutex> lock(pool->mutex);
+        if (pool->idle.size() < maxIdle)
+            pool->idle.push_back(std::move(workspace));
+    }
+    catch (...)
+    {
+        // A failed cache insertion must not affect evaluation or exception unwinding.
+    }
+}
 
 MStatus SkirtCollideDeformer::initialize()
 {
@@ -1211,11 +1662,19 @@ MStatus SkirtCollideDeformer::initialize()
 MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, const MMatrix&, unsigned int multiIndex)
 {
     MStatus stat;
+    auto pool = workspacePool;
+    auto returnWorkspace = [pool](SkirtCollideSurfaceWorkspace* value) {
+        releaseWorkspace(pool, std::unique_ptr<SkirtCollideSurfaceWorkspace>(value));
+    };
+    std::unique_ptr<SkirtCollideSurfaceWorkspace, decltype(returnWorkspace)> workspace(
+        acquireWorkspace(pool).release(), returnWorkspace);
 
     // Rest points are keyed by geometry index: on periodic surfaces the deformer iterator
     // skips the duplicated CVs, so its count differs from the rest data's iteration.
-    std::vector<MPoint> restPoints;
-    std::vector<char> restValid;
+    auto& restPoints = workspace->restPoints;
+    auto& restValid = workspace->restValid;
+    restPoints.clear();
+    restValid.clear();
     MDataHandle restHandle = dataBlock.inputValue(attr_restGeometry, &stat);
     if (stat && !restHandle.data().isNull())
     {
@@ -1356,7 +1815,7 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
         CHECK_MSTATUS_AND_RETURN_IT(stat);
         const bool closedU = dataBlock.inputValue(attr_closedU, &stat).asBool();
         CHECK_MSTATUS_AND_RETURN_IT(stat);
-        const auto topology = surfaceTopologyFor(surface, closedU, surfaceTopologyMutex, surfaceTopology);
+        const auto topology = surfaceTopologyFor(surface, closedU, surfaceCache);
         MPointArray cvs;
         stat = surface.getCVs(cvs, MSpace::kObject);
         CHECK_MSTATUS_AND_RETURN_IT(stat);
@@ -1367,9 +1826,13 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
         }
         const auto& t = *topology;
         const std::size_t count = t.canonical.size();
-        std::vector<char> members(count, 0);
-        std::vector<int> membership;
+        auto& members = workspace->members;
+        members.resize(count);
+        std::fill(members.begin(), members.end(), 0);
+        auto& membership = workspace->membership;
+        membership.clear();
         membership.reserve(count);
+        bool orderedFullMembership = true;
         for (; !iter.isDone(); iter.next())
         {
             const int index = iter.index();
@@ -1378,13 +1841,18 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
                 warnInvalidBasis(thisMObject());
                 return MS::kSuccess;
             }
+            orderedFullMembership = orderedFullMembership &&
+                                    static_cast<std::size_t>(index) == membership.size();
             membership.push_back(index);
             members[t.canonical[index]] = 1;
         }
         // Surface CV indices include periodic overlap slots; the deformer weight
         // cache can use a compact index domain. Read logical paint indices directly.
-        std::vector<double> paint(count, 1.0);
-        std::vector<std::pair<unsigned int, double>> rawPaint;
+        auto& paint = workspace->paint;
+        paint.resize(count);
+        std::fill(paint.begin(), paint.end(), 1.0);
+        auto& rawPaint = workspace->rawPaint;
+        rawPaint.clear();
         MArrayDataHandle weightLists = dataBlock.inputArrayValue(weightList, &stat);
         CHECK_MSTATUS_AND_RETURN_IT(stat);
         if (weightLists.jumpToElement(multiIndex) == MS::kSuccess)
@@ -1428,8 +1896,12 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
                                 2 * rawPaint.size() + membership.size() + 240);
         // Lengths delimit variable-size fields in the scalar comparison sequence.
         snapshot.append(cvs.length());
+        bool unitWeights = true;
         for (unsigned int i = 0; i < cvs.length(); ++i)
+        {
+            unitWeights = unitWeights && cvs[i].w == 1.0;
             snapshot.append(cvs[i]);
+        }
         snapshot.append(t.nu);
         snapshot.append(t.nv);
         snapshot.append(t.du);
@@ -1477,6 +1949,9 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
         snapshot.append(membership.size());
         for (int index : membership)
             snapshot.append(index);
+        const bool iteratorOutput = t.formU != MFnNurbsSurface::kPeriodic &&
+                                    t.formV != MFnNurbsSurface::kPeriodic &&
+                                    unitWeights && orderedFullMembership && membership.size() == count;
 
         std::shared_ptr<const SkirtCollideEvaluation> cached;
         if (snapshot.finite)
@@ -1489,55 +1964,105 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
         const bool hit = cached && snapshot.matches(cached->input);
         if (!hit)
         {
-            std::vector<SurfacePoint> points(count);
+            auto& points = workspace->points;
+            points.resize(count);
+            std::fill(points.begin(), points.end(), SurfacePoint{});
+            const LegVec3 restWaistPosition = legPoint(restWaist);
+            const LegVec3 restAxisDirection = legVector(restAxis);
             for (std::size_t i = 0; i < count; ++i)
             {
                 auto& p = points[i];
-                p.point = cvs[static_cast<unsigned int>(i)];
-                p.restPoint = restPoints[i];
                 // getCVs returns Cartesian xyz and a separate rational weight in w.
-                p.point.w = p.restPoint.w = 1.0;
+                // The solver uses xyz; the basis reads the stored w and output restores it.
+                p.point = legPoint(cvs[static_cast<unsigned int>(i)]);
+                p.weight = cvs[static_cast<unsigned int>(i)].w;
+                p.restPoint = legPoint(restPoints[i]);
                 // Maya omits periodic duplicates from the deformer iterator. Their
                 // paint and membership both follow the canonical CV.
                 const double q = paint[t.canonical[i]];
                 p.q = members[t.canonical[i]] && std::isfinite(q) ? clampValue(q, 0.0, 1.0) : 0.0;
-                p.finite = isFinitePoint(p.point) && isFinitePoint(p.restPoint);
-                const MVector offset = p.restPoint - restWaist;
-                const MVector radial = offset - restAxis * (offset * restAxis);
+                p.finite = finiteVector(p.point) && finiteVector(p.restPoint);
+                const LegVec3 offset = p.restPoint - restWaistPosition;
+                const LegVec3 radial = offset - restAxisDirection * (offset * restAxisDirection);
                 if (!p.finite || radial.length() < 1e-8)
                     p.q = 0.0;
             }
             buildLegs(current, rest, axes, ringScale, radii, thighPosition, calfPosition, skirtType == 1, legs,
                       restCylinders);
-            std::vector<SurfaceGroup> groups;
-            if (!coupleSurface(t, cvs, points, legs, restCylinders, restWaist, restAxis, falloff, groups, 10, 1))
+            std::vector<double> restKey;
+            restKey.reserve(2 * 3 * 16 + 2 + 3 + 8 + 4);
+            for (int side = 0; side < 2; ++side)
+                for (int joint = 0; joint < 3; ++joint)
+                    for (unsigned int row = 0; row < 4; ++row)
+                        for (unsigned int column = 0; column < 4; ++column)
+                            restKey.push_back(rest[side][joint][row][column]);
+            restKey.push_back(leftRingAxis);
+            restKey.push_back(rightRingAxis);
+            restKey.push_back(ringScale.x);
+            restKey.push_back(ringScale.y);
+            restKey.push_back(ringScale.z);
+            for (double radius : radii)
+                restKey.push_back(radius);
+            restKey.push_back(thighPosition);
+            restKey.push_back(calfPosition);
+            restKey.push_back(skirtType);
+            restKey.push_back(falloff);
+            std::shared_ptr<const SkirtCollideSurfacePreparation> preparation;
+            if (snapshot.finite)
+                preparation = surfaceCache.findPreparation(topology, [&](const SkirtCollideSurfacePreparation& candidate) {
+                    return candidate.matches(topology, cvs, restPoints, restKey);
+                });
+            std::shared_ptr<SkirtCollideSurfacePreparation> built;
+            if (!preparation && snapshot.finite)
+                built = std::make_shared<SkirtCollideSurfacePreparation>();
+            auto& groups = workspace->groups;
+            if (!coupleSurface(t, points, legs, restCylinders, restWaist, restAxis, falloff, groups,
+                               preparation.get(), built.get(), *workspace))
             {
                 warnInvalidBasis(thisMObject());
                 return MS::kSuccess;
+            }
+            if (built)
+            {
+                built->topology = topology;
+                built->weights.reserve(cvs.length());
+                for (unsigned int i = 0; i < cvs.length(); ++i)
+                    built->weights.push_back(cvs[i].w);
+                built->restPoints = restPoints;
+                built->restKey = std::move(restKey);
+                surfaceCache.publishPreparation(topology, built, preparationPayloadBytes(*built),
+                    [&](const SkirtCollideSurfacePreparation& candidate) {
+                        return candidate.matches(topology, cvs, restPoints, built->restKey);
+                    });
             }
             for (std::size_t i = 0; i < count; ++i)
             {
                 const auto& group = groups[t.groupOf[i]];
                 if (group.paint == 0.0)
                     continue;
-                MPoint result = points[i].point + envelopeValue * group.value;
-                result.w = cvs[static_cast<unsigned int>(i)].w;
+                const LegVec3 resultPosition = points[i].point + envelopeValue * group.value;
+                MPoint result(resultPosition.x, resultPosition.y, resultPosition.z,
+                              cvs[static_cast<unsigned int>(i)].w);
                 if (isFinitePoint(result))
                     cvs[static_cast<unsigned int>(i)] = result;
             }
         }
-        // Write the output surface directly: iterator writes discard rational w
-        // and omit periodic duplicates. Input geometry remains read-only.
-        MArrayDataHandle outputs = dataBlock.outputArrayValue(outputGeom, &stat);
-        CHECK_MSTATUS_AND_RETURN_IT(stat);
-        stat = outputs.jumpToElement(multiIndex);
-        CHECK_MSTATUS_AND_RETURN_IT(stat);
-        MDataHandle outputGeometry = outputs.outputValue(&stat);
-        CHECK_MSTATUS_AND_RETURN_IT(stat);
-        MFnNurbsSurface outputSurface(outputGeometry.asNurbsSurface(), &stat);
-        CHECK_MSTATUS_AND_RETURN_IT(stat);
         const MPointArray& outputCVs = hit ? cached->output : cvs;
-        stat = outputSurface.setCVs(outputCVs, MSpace::kObject);
+        if (iteratorOutput)
+            stat = iter.setAllPositions(outputCVs, MSpace::kObject);
+        else
+        {
+            // The iterator omits periodic duplicates and cannot preserve rational w.
+            MArrayDataHandle outputs = dataBlock.outputArrayValue(outputGeom, &stat);
+            CHECK_MSTATUS_AND_RETURN_IT(stat);
+            stat = outputs.jumpToElement(multiIndex);
+            CHECK_MSTATUS_AND_RETURN_IT(stat);
+            MDataHandle outputGeometry = outputs.outputValue(&stat);
+            CHECK_MSTATUS_AND_RETURN_IT(stat);
+            MFnNurbsSurface outputSurface(outputGeometry.asNurbsSurface(), &stat);
+            CHECK_MSTATUS_AND_RETURN_IT(stat);
+            stat = outputSurface.setCVs(outputCVs, MSpace::kObject);
+        }
         CHECK_MSTATUS_AND_RETURN_IT(stat);
         if (!hit && snapshot.finite)
         {
@@ -1554,6 +2079,8 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
         return MS::kSuccess;
     }
     buildLegs(current, rest, axes, ringScale, radii, thighPosition, calfPosition, skirtType == 1, legs, restCylinders);
+    const LegContactGeometry contactGeometry[2] = {legPrepareContactGeometry(legs[0], falloff),
+                                                    legPrepareContactGeometry(legs[1], falloff)};
     std::map<int, PointState> points;
     LegScratch scratch;
     for (; !iter.isDone(); iter.next())
@@ -1576,11 +2103,11 @@ MStatus SkirtCollideDeformer::deform(MDataBlock& dataBlock, MItGeometry& iter, c
             if (p.q > 0.0)
             {
                 waistRadial.normalize();
-                for (const auto& leg : legs)
+                for (int side = 0; side < 2; ++side)
                 {
                     LegContact constraint;
-                    if (legConstraint(leg, legPoint(p.point), legPoint(p.restPoint), legVector(waistRadial), falloff,
-                                      constraint, scratch))
+                    if (legConstraint(legs[side], legPoint(p.point), legPoint(p.restPoint), legVector(waistRadial),
+                                      falloff, constraint, scratch, contactGeometry[side]))
                         p.constraints.push_back(constraint);
                 }
             }
