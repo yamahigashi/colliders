@@ -7,18 +7,17 @@
 #include <string>
 
 #include "bellColliderSolver.h"
+#include "colliderDrawGeometry.h"
 
 using namespace std;
 
 struct DrawData
 {
-	MObject bellMesh;
-	vector<MObject> ringMeshList;
+	ColliderDraw::BellMesh bellMesh;
+	ColliderDraw::Rings rings;
 	vector<MPoint> collisionPointBellList;
 	vector<MPoint> collisionPointRingList;
-	vector<MVector> ringDirectionList;
-	vector<MPoint> ringPositionList;
-	MPoint bellCenter;
+	MPointArray directionLines;
 	MColor color;
 };
 

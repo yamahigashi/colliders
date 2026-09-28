@@ -1,0 +1,15 @@
+{
+  "candidate_base": "boundary_reuse",
+  "golden": {
+    "variant": "gauss3_boundary_reuse",
+    "source_sha256": {
+      "sources/skirtLegModel.h": "5cfa8bc40ceacb7c5853e7ea7d0927c3f2ab3f549c1f452250b813078351a819",
+      "sources/skirtLegBuild.h": "4a35d42ebdde54024ed112466b764e629f9ff2b339cebe7378850e66b4384d6c",
+      "sources/skirtCollideDeformer.cpp": "513d95b0cecba75fd30f4e7cac39c120d8be9ed537c44d410528c97c741c9abc",
+      "sources/skirtCollideDeformer.h": "2fd1ec6d1954285db8a7883493e5872e14600cbf9dbfc28d75e734cbab829408",
+      "tests/skirt_leg_model_test.cpp": "c10afef05ee3351352fc601a7be320842cb9ab61d15ef7a977d70f28d74d4da7",
+      "sources/skirtSurfaceCache.h": "53aa312382a2ff8996f94b34a2141b86d45ff305475eb0e6add623407ca5bcaf"
+    },
+    "dll_sha256": "3da88a4b3a848e92943616e74d35347aaca8cde0fdd474ae82aac906aa6d4faf"
+  }
+}

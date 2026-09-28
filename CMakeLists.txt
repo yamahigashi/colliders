@@ -1,30 +1,45 @@
 cmake_minimum_required(VERSION 3.10)
 
-project (colliders) 
+project (yddColliders)
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
 find_package( Maya REQUIRED )
 
 set(sources
+  sources/pluginIdentity.h
   sources/main.cpp 
   sources/bellCollider.cpp
   sources/bellCollider.h
+  sources/colliderDrawGeometry.h
+  sources/colliderInputValidation.h
   sources/bellColliderSolver.cpp
   sources/bellColliderSolver.h
+  sources/bellColliderRelaxKernel.h
   sources/planeCollider.cpp
   sources/planeCollider.h
   sources/skirtBellCollider.cpp
   sources/skirtBellCollider.h
+  sources/skirtRingFrames.h
+  sources/skirtLegProfile.h
   sources/skirtCollideDeformer.cpp
   sources/skirtCollideDeformer.h
   sources/skirtWaveDeformer.cpp
   sources/skirtWaveDeformer.h
+  sources/nurbsRefitKernel.h
+  sources/skirtSurfaceFit.cpp
+  sources/skirtSurfaceFit.h
   sources/utils.hpp)
 
-add_library(colliders SHARED ${sources})
+add_library(yddColliders SHARED ${sources})
 
-MAYA_PLUGIN( colliders )
-install(TARGETS colliders
+if(MSVC)
+  # Keep the checkout path out of the __FILE__ strings embedded in the binary.
+  file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/" YDD_TRIM_PREFIX)
+  target_compile_options(yddColliders PRIVATE "/d1trimfile:${YDD_TRIM_PREFIX}")
+endif()
+
+MAYA_PLUGIN( yddColliders )
+install(TARGETS yddColliders
         RUNTIME DESTINATION modules
         LIBRARY DESTINATION modules
         ARCHIVE DESTINATION modules)

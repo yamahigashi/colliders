@@ -1,4 +1,4 @@
-global proc AEskirtBellColliderTemplate( string $nodeName )
+global proc AEyddSkirtBellColliderTemplate( string $nodeName )
 {
     editorTemplate -beginScrollLayout;
 
@@ -10,7 +10,6 @@ global proc AEskirtBellColliderTemplate( string $nodeName )
             editorTemplate -addControl "bellSubdivision";
             editorTemplate -addControl "ringSubdivision";
             editorTemplate -addControl "falloff";
-            editorTemplate -addControl "collision";
             editorTemplate -addControl "tightness";
             editorTemplate -addControl "smoothness";
             editorTemplate -addControl "follow";

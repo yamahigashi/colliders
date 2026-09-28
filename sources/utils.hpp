@@ -58,7 +58,12 @@ T clamp(const T& v, const T& l, const T& h)
     return v;
 }
 
-inline MVector maxis(const MMatrix& mat, unsigned int index) { return MVector(mat[index][0], mat[index][1], mat[index][2]); }
+inline MVector maxis(const MMatrix& mat, unsigned int index)
+{
+    if (index >= 4)
+        return MVector(0, 0, 0);
+    return MVector(mat[index][0], mat[index][1], mat[index][2]);
+}
 inline MVector xaxis(const MMatrix &mat) { return maxis(mat, 0); }
 inline MVector yaxis(const MMatrix& mat) { return maxis(mat, 1); }
 inline MVector zaxis(const MMatrix& mat) { return maxis(mat, 2); }

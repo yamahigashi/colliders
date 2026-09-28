@@ -12,9 +12,18 @@ public:
     static MTypeId typeId;
 
     static MObject attr_bellMatrix;
+    static MObject attr_evaluationToWorldRotation;
     static MObject attr_amplitude;
     static MObject attr_amplitudeRamp;
     static MObject attr_idleAmplitude;
+    static MObject attr_idleAmplitudeV;
+    static MObject attr_idleAmplitudeU;
+    static MObject attr_idleDirectionality;
+    static MObject attr_idleDirectionX;
+    static MObject attr_idleDirectionZ;
+    static MObject attr_idleDirectionSpace;
+    static MObject attr_phaseSpread;
+    static MObject attr_impulseAmount;
     static MObject attr_wavePhaseV;
     static MObject attr_wavePhaseU;
     static MObject attr_idleComplexity;
@@ -32,6 +41,8 @@ public:
     static MObject attr_noiseFrequencyU;
     static MObject attr_skew;
     static MObject attr_sharpness;
+    static MObject attr_heightNormalization;
+    static MObject attr_referenceHeight;
 
     SkirtWaveDeformer();
     virtual ~SkirtWaveDeformer() override {}
@@ -41,8 +52,9 @@ public:
 
     virtual void postConstructor() override;
     virtual MStatus deform(MDataBlock& dataBlock, MItGeometry& iter,
-        const MMatrix& localToWorldMatrix, unsigned int multiIndex) override;
+        const MMatrix&, unsigned int multiIndex) override;
 
 private:
     bool bellMatrixWarningIssued;
+    bool rotationWarningIssued;
 };

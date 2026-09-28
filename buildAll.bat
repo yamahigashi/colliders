@@ -19,7 +19,7 @@ goto :usage
 call :buildForMayaVersion %~1
 if errorlevel 1 (
     echo.
-    echo ERROR: Failed to build colliders for Maya %~1.
+    echo ERROR: Failed to build yddColliders for Maya %~1.
     exit /b 1
 )
 
@@ -32,7 +32,7 @@ for %%V in (%SUPPORTED_MAYA_VERSIONS%) do (
     call :buildForMayaVersion %%V
     if errorlevel 1 (
         echo.
-        echo ERROR: Failed to build colliders for Maya %%V.
+        echo ERROR: Failed to build yddColliders for Maya %%V.
         exit /b 1
     )
 )
@@ -55,7 +55,7 @@ set "MAYA_INSTALL_DIR="
 
 echo.
 echo ============================================================
-echo Building colliders for Maya %MAYA_VERSION%
+echo Building yddColliders for Maya %MAYA_VERSION%
 echo ============================================================
 
 for /f "skip=2 tokens=2*" %%A in ('reg query "HKEY_LOCAL_MACHINE\SOFTWARE\Autodesk\Maya\%MAYA_VERSION%\Setup\InstallPath" /v "MAYA_INSTALL_LOCATION" 2^>nul') do set "MAYA_INSTALL_DIR=%%B"
@@ -86,14 +86,14 @@ if errorlevel 1 exit /b 1
 cmake --build "%BUILD_DIR%" --config Release
 if errorlevel 1 exit /b 1
 
-if not exist "%BUILD_DIR%\Release\colliders.mll" (
-    echo ERROR: Build succeeded but colliders.mll was not produced.
+if not exist "%BUILD_DIR%\Release\yddColliders.mll" (
+    echo ERROR: Build succeeded but yddColliders.mll was not produced.
     exit /b 1
 )
 
 if not exist "%PLUGIN_DIR%" mkdir "%PLUGIN_DIR%"
-copy /y "%BUILD_DIR%\Release\colliders.mll" "%PLUGIN_DIR%\colliders.mll" >nul
+copy /y "%BUILD_DIR%\Release\yddColliders.mll" "%PLUGIN_DIR%\yddColliders.mll" >nul
 if errorlevel 1 exit /b 1
 
-echo Deployed "%PLUGIN_DIR%\colliders.mll".
+echo Deployed "%PLUGIN_DIR%\yddColliders.mll".
 exit /b 0

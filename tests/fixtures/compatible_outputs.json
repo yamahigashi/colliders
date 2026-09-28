@@ -1,0 +1,268 @@
+{
+  "provenance": {
+    "source_commit": "86abb23 + row suspension and column smoothing (2026-09-28)",
+    "maya": "2026",
+    "python": "3.11.9 (tags/v3.11.9-dirty:de54cf5be37, Oct 18 2024, 09:47:19) [MSC v.1938 64 bit (AMD64)]",
+    "baseline_binary_sha256": "51b5cbf20673ce8e152202b37c8bf2ade3c4bea0f2e54473b5ae222dee9f2693",
+    "encoding": "SHA-256 of little-endian IEEE754 doubles (x, y, z, w), Maya CV order",
+    "scope": "12 default cases and 5 smoothing cases; U1 probes excluded",
+    "note": "Row suspension and column smoothing: Long below-knee rows are kept within the rest spacing of the row above (closed-ball projection with a bend toward the incoming direction), and on rigs without seams the interior rows displacements are smoothed across rows (2 iterations, share 0.5) with a ring relax; rest pose and Short bit-identical. Accepted by the user on 2026-09-28 after interactive trials and renders (docs/validation/real-leg-support.md)"
+  },
+  "cases": [
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 0,
+          "height": 0.4,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "37ca7026ec75e168c5dde679fddaaa3e3c4b5ef043c5af2b2c6e247f07ee9003"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 0,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "3bf5c54a7da4791706188908343b8f353144c682f2b62b69679e11c1d082f77b"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 0.4,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "a86f77cef9181140eb2eaed3dd937910b795442d8fd0612d98be570238f842ce"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "ef478a361145719c06ce477e0952e3d8a15107b3707cf0b371bd2086aab2037c"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "ef478a361145719c06ce477e0952e3d8a15107b3707cf0b371bd2086aab2037c"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": false,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "ef478a361145719c06ce477e0952e3d8a15107b3707cf0b371bd2086aab2037c"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 0,
+          "height": 0.4,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "c82cb740dfa155f71e76350613d103c513c1fd9237f007c1b651409fd436d861"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 0,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 57,
+      "sha256": "f43183f532d3a130d1df5999fec42cc2e67f810328c6d925663c3d6510cb1bba"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 0.4,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "a16f21fb13fcdbedfb533c4072cb2bdafadf30a199e85cff14f6a46325cea25d"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 0.5,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
+    },
+    {
+      "case": {
+        "group": "review12",
+        "bent": true,
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0
+        }
+      },
+      "point_count": 76,
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0.5,
+          "follow": 0
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "ce790a239c87d483bb07ed2b8cf50739c392a3d57977bcf51e84acb92f8dcd3e"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0,
+          "follow": 0.5
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "7b8f303deac46aaa444a0a48a7957e87e0a85a0cd88be2a7475d9c37bf782742"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 0.5,
+          "follow": 0.5
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "1eaa77268979b3c91e2b5540930631fdf51773191978ce8d1535eab8a93b6482"
+    },
+    {
+      "case": {
+        "group": "smoothing",
+        "attributes": {
+          "skirtType": 1,
+          "height": 1,
+          "tightness": 1,
+          "smoothness": 1,
+          "follow": 1
+        },
+        "bent": true
+      },
+      "point_count": 76,
+      "sha256": "f6ccf3cbf503d5361ef613bfb712ef6b1e1a83b2ebbfebe786d299247bf0da53"
+    }
+  ]
+}
