@@ -317,6 +317,19 @@ inline bool sampleMatrix(int nv, int q, const std::vector<double>& KvMaya,
                 continue;
             }
 
+            if (band > 0 && local == 1)
+            {
+                const std::vector<double> upperFull = fullKnots(clampedUniformKnotsMaya(spans[band - 1], 3));
+                const int upperLast = spans[band - 1] + 2;
+                const double rho = ((bounds[band + 1] - bounds[band]) * (localFull[4] - localFull[1]))
+                    / ((bounds[band] - bounds[band - 1]) * (upperFull[upperLast + 3] - upperFull[upperLast]));
+                const double rhoEff = std::min(rho, 4.0);
+                for (int j = 0; j < nv; ++j)
+                    coefficients[j] = (1.0 + rhoEff) * S[static_cast<size_t>(outRow - 1) * nv + j]
+                        - rhoEff * S[static_cast<size_t>(outRow - 2) * nv + j];
+                continue;
+            }
+
             std::vector<int> inBand;
             inBand.reserve(nv);
             for (int j = 0; j < nv; ++j)

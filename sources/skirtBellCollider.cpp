@@ -35,6 +35,7 @@
 #include "colliderInputValidation.h"
 #include "pluginIdentity.h"
 #include "skirtBellCollider.h"
+#include "skirtLegBuild.h"
 #include "skirtLegProfile.h"
 #include "skirtRingFrames.h"
 #include "utils.hpp"
@@ -91,6 +92,8 @@ MObject SkirtBellCollider::attr_hemUSamples;
 MObject SkirtBellCollider::attr_hemHeightSamples;
 MObject SkirtBellCollider::attr_followRange;
 MObject SkirtBellCollider::attr_referenceMaterialHeight;
+MObject SkirtBellCollider::attr_columnMaterialU;
+MObject SkirtBellCollider::attr_columnOffsetMatrix;
 MObject SkirtBellCollider::attr_outputReferenceHeight;
 MObject SkirtBellCollider::attr_outputPatches;
 MObject SkirtBellCollider::attr_patchSurface;
@@ -129,6 +132,97 @@ struct SkirtCutSettings
     bool panelMode = false;
     bool ignoredHem = false;
 };
+
+struct ColumnOffset
+{
+    unsigned int index;
+    double u;
+    MMatrix matrix;
+    bool unit;
+};
+
+MStatus skirtError(const MObject &node, int condition, const std::string &reason);
+MStatus readDoubleArray(const MObject &object, MDoubleArray &values);
+
+bool exactUnit(const MMatrix &matrix)
+{
+    const MMatrix identity;
+    for (unsigned int r = 0; r < 4; ++r)
+        for (unsigned int c = 0; c < 4; ++c)
+            if (matrix[r][c] != identity[r][c])
+                return false;
+    return true;
+}
+
+MStatus readColumnOffsets(MDataBlock &block, const MObject &node, std::vector<ColumnOffset> &columns)
+{
+    MStatus status;
+    MArrayDataHandle array = block.inputArrayValue(SkirtBellCollider::attr_columnOffsetMatrix, &status);
+    if (!status)
+        return status;
+    const unsigned int count = array.elementCount(&status);
+    if (!status)
+        return status;
+    std::vector<std::pair<unsigned int, unsigned int>> elements;
+    for (unsigned int i = 0; i < count; ++i)
+    {
+        status = array.jumpToArrayElement(i);
+        if (!status)
+            return status;
+        const unsigned int index = array.elementIndex(&status);
+        if (!status)
+            return status;
+        elements.emplace_back(index, i);
+    }
+    std::sort(elements.begin(), elements.end());
+    MDataHandle materialData = block.inputValue(SkirtBellCollider::attr_columnMaterialU, &status);
+    if (!status)
+        return status;
+    MDoubleArray materialU;
+    status = readDoubleArray(materialData.data(), materialU);
+    if (!status)
+        return status;
+    for (const auto &entry : elements)
+    {
+        status = array.jumpToArrayElement(entry.second);
+        if (!status)
+            return status;
+        MDataHandle element = array.inputValue(&status);
+        if (!status)
+            return status;
+        if (entry.first >= materialU.length())
+            return skirtError(node, 17, "columnMaterialU[" + std::to_string(entry.first) +
+                                             "] is missing for columnOffsetMatrix[" + std::to_string(entry.first) + "].");
+        columns.push_back({entry.first, materialU[entry.first], element.asMatrix(), false});
+    }
+    for (const auto &column : columns)
+        if (!std::isfinite(column.u) || column.u < 0.0 || column.u >= 1.0)
+            return skirtError(node, 17, "columnMaterialU[" + std::to_string(column.index) +
+                                             "] for columnOffsetMatrix[" + std::to_string(column.index) +
+                                             "] must be finite in [0,1).");
+    for (auto &column : columns)
+        column.unit = exactUnit(column.matrix);
+    std::vector<size_t> order(columns.size());
+    for (size_t i = 0; i < order.size(); ++i)
+        order[i] = i;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        return columns[a].u == columns[b].u ? columns[a].index < columns[b].index : columns[a].u < columns[b].u;
+    });
+    for (size_t i = 0; i < order.size(); ++i)
+    {
+        const size_t next = (i + 1) % order.size();
+        const double gap = columns[order[next]].u + (next == 0 ? 1.0 : 0.0) - columns[order[i]].u;
+        if (order.size() > 1 && !(gap > materialTolerance))
+            return skirtError(node, 18, "columnOffsetMatrix[" + std::to_string(columns[order[i]].index) +
+                                             "] and columnOffsetMatrix[" +
+                                             std::to_string(columns[order[next]].index) + "] spacing " +
+                                             std::to_string(gap) + " must exceed 1e-9.");
+    }
+    std::sort(columns.begin(), columns.end(), [](const ColumnOffset &a, const ColumnOffset &b) {
+        return a.u == b.u ? a.index < b.index : a.u < b.u;
+    });
+    return MS::kSuccess;
+}
 
 MStatus skirtError(const MObject &node, int condition, const std::string &reason)
 {
@@ -485,6 +579,163 @@ struct SkirtSegment
     MVector x;
     MVector z;
 };
+
+struct PreparedColumn
+{
+    double u;
+    bool unit;
+    MPoint origin;
+    MMatrix delta;
+};
+
+bool prepareColumns(const std::vector<ColumnOffset> &columns, const SkirtCurve &waist, int count,
+                    const MMatrix &bellFrame, MMatrix &inverseBell, std::vector<PreparedColumn> &prepared)
+{
+    if (columns.empty() || std::all_of(columns.begin(), columns.end(), [](const ColumnOffset &c) { return c.unit; }))
+        return true;
+    inverseBell = bellFrame.inverse();
+    for (const auto &column : columns)
+    {
+        PreparedColumn item;
+        item.u = column.u;
+        item.unit = column.unit;
+        if (!item.unit)
+        {
+            SkirtCurve extended = extendPeriodic(waist, count);
+            if (!clampAt(extended, column.u))
+                return false;
+            const auto first = std::lower_bound(extended.knots.begin(), extended.knots.end(), column.u);
+            if (first == extended.knots.begin() || first == extended.knots.end())
+                return false;
+            const size_t f = static_cast<size_t>(first - extended.knots.begin());
+            item.origin = extended.points[f - 1] * inverseBell;
+            const MVector derivative = (extended.points[f] - extended.points[f - 1]) *
+                                       (3.0 / (extended.knots[f + 3] - column.u));
+            const MVector tangentRaw = derivative * inverseBell;
+            const MVector axis(0.0, 1.0, 0.0);
+            const MVector tangent = (tangentRaw - axis * (tangentRaw * axis)).normal();
+            const MVector radialRaw(item.origin.x, 0.0, item.origin.z);
+            const MVector radial = (radialRaw - tangent * (radialRaw * tangent)).normal();
+            MMatrix frame;
+            for (unsigned int c = 0; c < 3; ++c)
+            {
+                frame[0][c] = tangent[c];
+                frame[1][c] = radial[c];
+                frame[2][c] = axis[c];
+            }
+            frame[0][3] = frame[1][3] = frame[2][3] = 0.0;
+            frame[3][0] = frame[3][1] = frame[3][2] = 0.0;
+            frame[3][3] = 1.0;
+            item.delta = frame.transpose() * column.matrix * frame;
+        }
+        prepared.push_back(item);
+    }
+    return true;
+}
+
+MVector columnDisplacement(const MPoint &point, const PreparedColumn &column)
+{
+    if (column.unit)
+        return MVector(0.0, 0.0, 0.0);
+    const MPoint relative(point.x - column.origin.x, point.y - column.origin.y, point.z - column.origin.z, 1.0);
+    MPoint transformed = relative * column.delta;
+    transformed.x += column.origin.x;
+    transformed.y += column.origin.y;
+    transformed.z += column.origin.z;
+    return transformed - point;
+}
+
+bool applyColumnOffsets(SkirtRow &row, const std::vector<PreparedColumn> &columns, const MMatrix &bellFrame,
+                        const MMatrix &inverseBell)
+{
+    if (columns.empty() || std::all_of(columns.begin(), columns.end(), [](const PreparedColumn &c) { return c.unit; }))
+        return true;
+    for (const auto &component : row.topology.components)
+    {
+        std::vector<std::pair<double, size_t>> samples;
+        for (size_t j = 0; j < columns.size(); ++j)
+        {
+            double s = columns[j].u;
+            if (!component.closed)
+            {
+                s += std::ceil(component.startU - s);
+                if (!(s > component.startU && s < component.endU))
+                    continue;
+            }
+            samples.emplace_back(s, j);
+        }
+        if (!component.closed && samples.empty())
+        {
+            for (size_t j = 0; j < columns.size(); ++j)
+            {
+                const auto seamDistance = [](double a, double b) {
+                    const double d = std::abs(a - b);
+                    return std::min(d, 1.0 - d);
+                };
+                if (seamDistance(columns[j].u, component.startU - std::floor(component.startU)) <= materialTolerance)
+                    samples.emplace_back(component.startU, j);
+                if (seamDistance(columns[j].u, component.endU - std::floor(component.endU)) <= materialTolerance)
+                    samples.emplace_back(component.endU, j);
+            }
+        }
+        std::sort(samples.begin(), samples.end());
+        for (unsigned int i = 0; i < row.topology.vertices.size(); ++i)
+        {
+            const auto &vertex = row.topology.vertices[i];
+            if (&component != &row.topology.components[vertex.componentId])
+                continue;
+            MVector delta(0.0, 0.0, 0.0);
+            if (samples.size() == 1)
+                delta = columnDisplacement(row.base[i] * inverseBell, columns[samples[0].second]);
+            else if (samples.size() > 1)
+            {
+                double s = vertex.materialU;
+                if (component.closed)
+                    s += std::ceil(samples.front().first - s);
+                else if (vertex.side.seamIndex >= 0)
+                    s = vertex.side.bank < 0 ? component.startU : component.endU;
+                auto upper = std::lower_bound(samples.begin(), samples.end(), std::make_pair(s, size_t(0)));
+                if (upper != samples.end() && upper->first == s)
+                    delta = columnDisplacement(row.base[i] * inverseBell, columns[upper->second]);
+                else if (!component.closed && upper == samples.begin())
+                    delta = columnDisplacement(row.base[i] * inverseBell, columns[samples.front().second]);
+                else if (!component.closed && upper == samples.end())
+                    delta = columnDisplacement(row.base[i] * inverseBell, columns[samples.back().second]);
+                else
+                {
+                    size_t left, right;
+                    double lo, hi;
+                    if (upper == samples.end())
+                    {
+                        left = samples.back().second;
+                        right = samples.front().second;
+                        lo = samples.back().first;
+                        hi = samples.front().first + 1.0;
+                        if (s < lo)
+                            s += 1.0;
+                    }
+                    else
+                    {
+                        right = upper->second;
+                        left = (upper - 1)->second;
+                        lo = (upper - 1)->first;
+                        hi = upper->first;
+                    }
+                    const double lambda = (s - lo) / (hi - lo);
+                    const MPoint pointB = row.base[i] * inverseBell;
+                    delta = columnDisplacement(pointB, columns[left]) * (1.0 - lambda) +
+                            columnDisplacement(pointB, columns[right]) * lambda;
+                }
+            }
+            const MVector deltaG = delta * bellFrame;
+            row.base[i] += deltaG;
+            const MPoint &p = row.base[i];
+            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) || !std::isfinite(p.w))
+                return false;
+        }
+    }
+    return true;
+}
 
 size_t panelForMaterial(const SkirtCutSettings &settings, double u, int bank)
 {
@@ -1129,6 +1380,13 @@ MStatus SkirtBellCollider::initialize()
     addAttribute(attr_followRange);
     attr_referenceMaterialHeight = number("referenceMaterialHeight", "rmh", 1.0, false);
     addAttribute(attr_referenceMaterialHeight);
+    attr_columnMaterialU = array("columnMaterialU", "comu", false);
+    attr_columnOffsetMatrix = mAttr.create("columnOffsetMatrix", "comx", MFnMatrixAttribute::kDouble);
+    flags(mAttr, false, true);
+    mAttr.setArray(true);
+    mAttr.setIndexMatters(true);
+    addAttribute(attr_columnOffsetMatrix);
+    addAttribute(attr_columnMaterialU);
     attr_outputReferenceHeight = number("outputReferenceHeight", "orh", 0.0, true);
     addAttribute(attr_outputReferenceHeight);
 
@@ -1187,6 +1445,8 @@ MStatus SkirtBellCollider::initialize()
                                attr_hemHeightSamples,
                                attr_followRange,
                                attr_referenceMaterialHeight,
+                               attr_columnOffsetMatrix,
+                               attr_columnMaterialU,
                                MPxNode::state};
     for (const MObject &attr : affects)
     {
@@ -1408,6 +1668,10 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
     stat = validateHemBoundaries(settings, beta, thisMObject());
     if (!stat)
         return stat;
+    std::vector<ColumnOffset> columnOffsets;
+    stat = readColumnOffsets(dataBlock, thisMObject(), columnOffsets);
+    if (!stat)
+        return stat;
     if (invalidMaterial || !std::isfinite(follow) || !std::isfinite(smoothness) || !std::isfinite(falloff) ||
         !std::isfinite(tightness))
         return skirtError(thisMObject(), 9,
@@ -1437,6 +1701,17 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
 
     const MVector raw_Z = X ^ dir_y;
     const MVector Z = raw_Z.length() < 1e-4 ? MVector(0, 0, 1) : raw_Z.normal();
+    MMatrix bellFrame;
+    const bool needsColumnFrame = std::any_of(columnOffsets.begin(), columnOffsets.end(),
+                                               [](const ColumnOffset &column) { return !column.unit; });
+    if (needsColumnFrame)
+    {
+        const double bellFrameValues[4][4] = {{X.x, X.y, X.z, 0.0},
+                                              {dir_y.x, dir_y.y, dir_y.z, 0.0},
+                                              {Z.x, Z.y, Z.z, 0.0},
+                                              {P_start.x, P_start.y, P_start.z, 1.0}};
+        bellFrame = MMatrix(bellFrameValues);
+    }
 
     const BellCircleTable circle(bellSubdivision);
 
@@ -1502,6 +1777,10 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
             knot = (knot - umin) / (umax - umin);
         segment.top.knots = segment.bottom.knots;
     }
+    std::vector<PreparedColumn> preparedColumns;
+    MMatrix inverseBell;
+    if (!prepareColumns(columnOffsets, segments[0].bottom, bellSubdivision, bellFrame, inverseBell, preparedColumns))
+        return skirtError(thisMObject(), 9, "column material could not be clamped on the waist curve.");
     std::vector<SkirtRow> rows;
     for (const auto &heightRow : heights)
     {
@@ -1529,6 +1808,8 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
             return skirtError(thisMObject(), 9,
                               "seams or material coordinates cannot construct a "
                               "finite cubic row with distinct Greville samples.");
+        if (!applyColumnOffsets(row, preparedColumns, bellFrame, inverseBell))
+            return skirtError(thisMObject(), 9, "column offsets produced a nonfinite row base.");
         const double distance = h_val * row.height.t;
         const double level = profile.levelParameter(distance, d_hip);
         auto prepare = [&](const MMatrix &base, SkirtLegProfile::Ring kind) {
@@ -1863,21 +2144,30 @@ MUserData *SkirtBellColliderDrawOverride::prepareForDraw(const MDagPath &objPath
         return data;
     }
 
-    const SkirtRingFrames ringFrames(leftHipMatrix, leftKneeMatrix, leftHeelMatrix, rightHipMatrix, rightKneeMatrix,
-                                     rightHeelMatrix, ringScale, leftRingAxis, rightRingAxis, skirtType == 1);
     auto getDouble = [&obj](const MObject &attr, double value) {
         MPlug(obj, attr).getValue(value);
         return value;
     };
-    const SkirtLegProfile profile(
+    const double radii[8] = {
         getDouble(SkirtBellCollider::attr_thighRadiusX, 1.0), getDouble(SkirtBellCollider::attr_thighRadiusZ, 1.0),
-        getDouble(SkirtBellCollider::attr_kneeRadiusX, 1.0), getDouble(SkirtBellCollider::attr_kneeRadiusZ, 1.0),
-        getDouble(SkirtBellCollider::attr_calfRadiusX, 1.0), getDouble(SkirtBellCollider::attr_calfRadiusZ, 1.0),
-        getDouble(SkirtBellCollider::attr_ankleRadiusX, 1.0), getDouble(SkirtBellCollider::attr_ankleRadiusZ, 1.0),
-        getDouble(SkirtBellCollider::attr_thighPosition, 0.5), getDouble(SkirtBellCollider::attr_calfPosition, 0.5),
-        ringFrames.thighLength, ringFrames.calfLength);
+        getDouble(SkirtBellCollider::attr_kneeRadiusX, 1.0),  getDouble(SkirtBellCollider::attr_kneeRadiusZ, 1.0),
+        getDouble(SkirtBellCollider::attr_calfRadiusX, 1.0),  getDouble(SkirtBellCollider::attr_calfRadiusZ, 1.0),
+        getDouble(SkirtBellCollider::attr_ankleRadiusX, 1.0), getDouble(SkirtBellCollider::attr_ankleRadiusZ, 1.0)};
+    const MMatrix current[2][3] = {{leftHipMatrix, leftKneeMatrix, leftHeelMatrix},
+                                   {rightHipMatrix, rightKneeMatrix, rightHeelMatrix}};
+    const short axes[2] = {leftRingAxis, rightRingAxis};
+    Leg legs[2];
+    std::vector<LegSegment> restSegments;
+    buildLegs(current, current, axes, ringScale, radii, getDouble(SkirtBellCollider::attr_thighPosition, 0.5),
+              getDouble(SkirtBellCollider::attr_calfPosition, 0.5), skirtType == 1, legs, restSegments);
+    std::vector<std::array<LegVec3, 4>> rows;
     std::vector<std::array<double, 2>> farMultipliers;
-    const auto matrices = ringFrames.visibleMatrices(profile, farMultipliers);
+    for (const auto &leg : legs)
+        for (const auto &segment : leg)
+            legRingMatrices(segment.current, rows, farMultipliers);
+    std::vector<MMatrix> matrices;
+    for (const auto &ring : rows)
+        matrices.push_back(legRingMatrix(ring));
     data->drawData.rings.update(matrices, ringSubdivision, farMultipliers);
 
     bool panelMode = false;

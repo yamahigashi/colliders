@@ -97,9 +97,9 @@ struct BellRowInputs
     double smoothness = 0.0;
     double followGain = 0.0;
     double followRange = 0.1875;
-    // Material width over which a row component fades out of a ring rotation
-    // once the ring points past its end (0 keeps only the components that
-    // contain the contact position).
+    // Material width over which an open row component fades out of a ring
+    // rotation as the contact position approaches one of its free ends (0
+    // keeps the full rotation up to the end).
     double contactBlendWidth = 0.0;
     int physicalLevel = 0;
 };

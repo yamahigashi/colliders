@@ -38,40 +38,4 @@ struct SkirtRingFrames {
     }
   }
 
-  std::vector<MMatrix>
-  visibleMatrices(const SkirtLegProfile &profile,
-                  std::vector<std::array<double, 2>> &farMultipliers) const {
-    std::vector<MMatrix> result;
-    farMultipliers.clear();
-    auto appendLeg = [&](const std::array<MPoint, 3> &joints,
-                         const MMatrix &kneeFrame, const MMatrix &heelFrame) {
-      const std::array<MPoint, 5> positions{
-          {joints[0],
-           joints[0] + (joints[1] - joints[0]) * profile.thighPosition,
-           joints[1],
-           joints[1] + (joints[2] - joints[1]) * profile.calfPosition,
-           joints[2]}};
-      const int segments = longSkirt ? 4 : 2;
-      for (int i = 0; i < segments; ++i) {
-        MMatrix matrix = i < 2 ? kneeFrame : heelFrame;
-        const auto &startRadius = profile.stations[i];
-        const auto &endRadius = profile.stations[i + 1];
-        for (unsigned int c = 0; c < 3; ++c) {
-          matrix[0][c] *= startRadius.x;
-          matrix[2][c] *= startRadius.z;
-        }
-        set_maxis(matrix, 1, positions[i + 1] - positions[i]);
-        matrix[3][0] = positions[i].x;
-        matrix[3][1] = positions[i].y;
-        matrix[3][2] = positions[i].z;
-        result.push_back(matrix);
-        const double farX = startRadius.x > 1e-12 ? endRadius.x / startRadius.x : 1.0;
-        const double farZ = startRadius.z > 1e-12 ? endRadius.z / startRadius.z : 1.0;
-        farMultipliers.push_back({{farX, farZ}});
-      }
-    };
-    appendLeg(leftJoints, leftKnee, leftHeel);
-    appendLeg(rightJoints, rightKnee, rightHeel);
-    return result;
-  }
 };

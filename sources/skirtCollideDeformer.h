@@ -6,6 +6,14 @@
 #include <maya/MStatus.h>
 #include <maya/MTypeId.h>
 
+#include <atomic>
+#include <map>
+#include <memory>
+#include <mutex>
+
+struct SkirtCollideSurfaceTopology;
+struct SkirtCollideEvaluation;
+
 class SkirtCollideDeformer : public MPxDeformerNode
 {
 public:
@@ -54,5 +62,9 @@ public:
     virtual MStatus deform(MDataBlock& dataBlock, MItGeometry& iter, const MMatrix&, unsigned int multiIndex) override;
 
 private:
-    bool restGeometryWarningIssued;
+    std::atomic<bool> restGeometryWarningIssued;
+    std::mutex surfaceTopologyMutex;
+    std::shared_ptr<const SkirtCollideSurfaceTopology> surfaceTopology;
+    std::mutex evaluationMutex;
+    std::map<unsigned int, std::shared_ptr<const SkirtCollideEvaluation>> evaluations;
 };

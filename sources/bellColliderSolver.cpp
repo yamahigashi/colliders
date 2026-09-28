@@ -616,43 +616,35 @@ void rowDistances(const BellRowTopology &topology, const std::vector<unsigned in
     }
 }
 
-double circularMaterialDistance(double a, double b)
-{
-    double x = a - b;
-    x -= std::floor(x);
-    return (std::min)(x, 1.0 - x);
-}
-
 // Per-component rotation weight. The ray from the bell centre through the
 // bell contact point of the ring (the same sphere hit that drives the rotation)
-// crosses the row polyline at a material position; every component whose
-// material interval contains that position keeps weight 1, and any other
-// component fades with the material distance from the position to its nearer
-// end, reaching exactly 0 at blendWidth. A seam crossing therefore moves the
-// lift between panels over blendWidth of material instead of in one step. The
+// crosses the row polyline at a material position. A closed row keeps weight
+// 1. An open component that does not contain that position has weight 0. A
+// component that contains it fades with the material distance from the
+// position to its nearer free end, reaching exactly 0 at the end and 1 at
+// blendWidth: a free end near the contact has no hoop tension to lift, so the
+// lift disappears towards a seam instead of switching between panels. The
 // bell centre is used because every row surrounds it, whereas a ring close to
 // or outside the row would see the CVs under magnified angles or miss the row.
-// Without a forward crossing only the seed's component rotates. With a single
-// component every weight is 1, so the caller never blends.
+// Without a forward crossing only the seed's component rotates.
 std::vector<double> componentContactWeights(const BellRowTopology &topology, const std::vector<MVector> &offsets,
                                             const MVector &direction, unsigned int seed, double blendWidth)
 {
     std::vector<double> weights(topology.components.size(), 1.0);
-    if (topology.components.size() < 2)
+    if (topology.components.size() == 1 && topology.components[0].closed)
         return weights;
     const auto cross = [](const MVector &a, const MVector &b) { return a.z * b.x - a.x * b.z; };
     double nearest = std::numeric_limits<double>::infinity();
     double contactU = 0.0;
-    for (size_t i = 0; i < offsets.size(); ++i)
-    {
+    // A crossing on the edge (i, j). Virtual edges join the two banks of a
+    // seam so a ray through the gap between displaced banks still finds a
+    // contact position; every point of such an edge has the seam's material U.
+    const auto consider = [&](size_t i, size_t j, bool virtualEdge) {
         const auto &vertex = topology.vertices[i];
-        if (vertex.next < 0)
-            continue;
-        const size_t j = static_cast<size_t>(vertex.next);
         const double ci = cross(offsets[i], direction);
         const double cj = cross(offsets[j], direction);
         if ((ci == 0.0 && cj == 0.0) || !((ci >= 0.0 && cj <= 0.0) || (ci <= 0.0 && cj >= 0.0)))
-            continue;
+            return;
         MVector hit;
         double u;
         if (ci == 0.0)
@@ -663,13 +655,13 @@ std::vector<double> componentContactWeights(const BellRowTopology &topology, con
         else if (cj == 0.0)
         {
             hit = offsets[j];
-            u = topology.vertices[j].materialU;
+            u = virtualEdge ? vertex.materialU : topology.vertices[j].materialU;
         }
         else
         {
             const double lambda = ci / (ci - cj);
             hit = offsets[i] + (offsets[j] - offsets[i]) * lambda;
-            double span = topology.vertices[j].materialU - vertex.materialU;
+            double span = virtualEdge ? 0.0 : topology.vertices[j].materialU - vertex.materialU;
             if (span < 0.0)
                 span += 1.0;
             u = vertex.materialU + span * lambda;
@@ -679,6 +671,21 @@ std::vector<double> componentContactWeights(const BellRowTopology &topology, con
         {
             nearest = t;
             contactU = u;
+        }
+    };
+    for (size_t i = 0; i < offsets.size(); ++i)
+        if (topology.vertices[i].next >= 0)
+            consider(i, static_cast<size_t>(topology.vertices[i].next), false);
+    for (size_t i = 0; i < offsets.size(); ++i)
+    {
+        const auto &end = topology.vertices[i].side;
+        if (end.bank != 1)
+            continue;
+        for (size_t j = 0; j < offsets.size(); ++j)
+        {
+            const auto &start = topology.vertices[j].side;
+            if (start.bank == -1 && start.seamIndex == end.seamIndex)
+                consider(i, j, true);
         }
     }
     if (!std::isfinite(nearest))
@@ -690,17 +697,21 @@ std::vector<double> componentContactWeights(const BellRowTopology &topology, con
     for (size_t c = 0; c < weights.size(); ++c)
     {
         const auto &component = topology.components[c];
+        if (component.closed)
+            continue;
+        const double span = component.endU - component.startU;
         double inside = contactU - component.startU;
         inside -= std::floor(inside);
-        if (inside <= component.endU - component.startU)
+        if (inside > span)
+        {
+            weights[c] = 0.0;
             continue;
-        weights[c] = 0.0;
-        const double lag = (std::min)(circularMaterialDistance(contactU, component.startU),
-                                      circularMaterialDistance(contactU, component.endU));
-        if (blendWidth <= 0.0 || lag >= blendWidth)
+        }
+        const double edge = (std::min)(inside, span - inside);
+        if (blendWidth <= 0.0 || edge >= blendWidth)
             continue;
-        const double t = lag / blendWidth;
-        weights[c] = 1.0 - t * t * (3.0 - 2.0 * t);
+        const double t = edge / blendWidth;
+        weights[c] = t * t * (3.0 - 2.0 * t);
     }
     return weights;
 }

@@ -75,6 +75,8 @@ class SkirtBellCollider : public MPxLocatorNode
     static MObject attr_hemHeightSamples;
     static MObject attr_followRange;
     static MObject attr_referenceMaterialHeight;
+    static MObject attr_columnMaterialU;
+    static MObject attr_columnOffsetMatrix;
     // Outputs
     static MObject attr_outputSurface;
     static MObject attr_outputReferenceHeight;
