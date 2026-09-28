@@ -5,6 +5,7 @@
 #include <maya/MVector.h>
 #include <maya/MObject.h>
 #include <maya/MStatus.h>
+#include <cstddef>
 #include <vector>
 
 #include "utils.hpp"
@@ -90,6 +91,22 @@ struct BellRowTopology
     unsigned int outputCount = 0;
 };
 
+class BellRowCorrespondence
+{
+    friend class BellColliderSolver;
+    struct Entry
+    {
+        std::size_t left = 0;
+        std::size_t right = 0;
+        double lambda = 0.0;
+        bool matched = false;
+        bool interpolate = false;
+    };
+    std::size_t sourceCount = 0;
+    bool valid = false;
+    std::vector<Entry> entries;
+};
+
 struct BellRowInputs
 {
     MMatrix bellMatrix;
@@ -140,6 +157,31 @@ public:
                                    double followRange, std::vector<MVector> &follow);
   static MStatus transferDirectField(const BellDirectField &source, const BellRowTopology &destination,
                                     BellRowTransfer &transfer);
+  static MStatus buildRowCorrespondence(const BellRowTopology &source, const BellRowTopology &destination,
+                                        BellRowCorrespondence &correspondence);
+  static MStatus transferRowValues(const std::vector<MVector> &values, const BellRowTopology &source,
+                                   const BellRowTopology &destination, std::vector<MVector> &out,
+                                   std::vector<bool> &matched);
+  static MStatus transferRowValues(const std::vector<MVector> &values, const BellRowCorrespondence &correspondence,
+                                   std::vector<MVector> &out, std::vector<bool> &matched);
+  static MStatus projectSuspendedRow(const MPointArray &anchorFinal, const MPointArray &anchorBase,
+                                     const BellRowTopology &anchorTopology, const MPointArray *aboveFinal,
+                                     const BellRowTopology *aboveTopology, const MPointArray &base,
+                                     const MPointArray &current, const BellRowTopology &topology, MPointArray &out);
+  static MStatus projectSuspendedRow(const MPointArray &anchorFinal, const MPointArray &anchorBase,
+                                     const BellRowCorrespondence &anchor, const MPointArray *aboveFinal,
+                                     const BellRowCorrespondence *above, const MPointArray &base,
+                                     const MPointArray &current, MPointArray &out);
+  static MStatus smoothRowDisplacements(const MPointArray &upBase, const MPointArray &upCurrent,
+                                        const BellRowTopology &upTopology, const MPointArray &base,
+                                        const MPointArray &current, const BellRowTopology &topology,
+                                        const MPointArray &downBase, const MPointArray &downCurrent,
+                                        const BellRowTopology &downTopology, MPointArray &out);
+  static MStatus smoothRowDisplacements(const MPointArray &upBase, const MPointArray &upCurrent,
+                                        const BellRowCorrespondence &up, const MPointArray &base,
+                                        const MPointArray &current, const MPointArray &downBase,
+                                        const MPointArray &downCurrent, const BellRowCorrespondence &down,
+                                        MPointArray &out);
   // componentWeights, when given, receives one weight per component for each
   // ring (1 for rings without a rotation).
   // Relax toward one ring, faded for the points of components that ring lifts
@@ -178,5 +220,10 @@ public:
     static MVector mergeDisplacement(const MPointArray& basePoints,
                                      const std::vector<MPointArray>& ringPoints, unsigned int index);
 private:
-    static void averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const std::vector<MPointArray>& bellPointsList, MPointArray& outBellPoints);
+  static void transferRowValuesImpl(const BellRowTopology &source, const BellRowTopology &destination,
+                                    BellRowCorrespondence &correspondence);
+  static void applyRowCorrespondence(const std::vector<MVector> &values, const BellRowCorrespondence &correspondence,
+                                     std::vector<MVector> &out, std::vector<bool> &matched);
+  static void averageDisplacements(int bellSubdivision, const MPointArray &baseBellPoints,
+                                   const std::vector<MPointArray> &bellPointsList, MPointArray &outBellPoints);
 };

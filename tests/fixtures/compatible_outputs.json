@@ -1,12 +1,12 @@
 {
   "provenance": {
-    "source_commit": "90cad24 + thigh ring distal end (2026-09-27)",
+    "source_commit": "86abb23 + row suspension and column smoothing (2026-09-28)",
     "maya": "2026",
     "python": "3.11.9 (tags/v3.11.9-dirty:de54cf5be37, Oct 18 2024, 09:47:19) [MSC v.1938 64 bit (AMD64)]",
-    "baseline_binary_sha256": "8f43aa0b0dbff037e47cbd59f638d862861d80bc134fa80f8e3bd63fe2cc36d3",
+    "baseline_binary_sha256": "51b5cbf20673ce8e152202b37c8bf2ade3c4bea0f2e54473b5ae222dee9f2693",
     "encoding": "SHA-256 of little-endian IEEE754 doubles (x, y, z, w), Maya CV order",
     "scope": "12 default cases and 5 smoothing cases; U1 probes excluded",
-    "note": "thigh ring distal end: Knee and Extended rings fade the directional relax displacement to zero over the band L to L + w beyond the ring length (w = min(L, max profile radius)); Heel, yddBellCollider and the old relax overload unchanged. Accepted by the user on 2026-09-27 after renders and multi-scene measurements (docs/validation/thigh-ring-distal-end.md)"
+    "note": "Row suspension and column smoothing: Long below-knee rows are kept within the rest spacing of the row above (closed-ball projection with a bend toward the incoming direction), and on rigs without seams the interior rows displacements are smoothed across rows (2 iterations, share 0.5) with a ring relax; rest pose and Short bit-identical. Accepted by the user on 2026-09-28 after interactive trials and renders (docs/validation/real-leg-support.md)"
   },
   "cases": [
     {
@@ -142,7 +142,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "efd88bd84921e4d7766a97b590e82dcd879ce2c995c6fb861141d85eae276b50"
+      "sha256": "a16f21fb13fcdbedfb533c4072cb2bdafadf30a199e85cff14f6a46325cea25d"
     },
     {
       "case": {
@@ -157,7 +157,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "31defadb6cfa66232c38294df2ff85d967283e1318aec49604ba4ad0315308ba"
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
     },
     {
       "case": {
@@ -172,7 +172,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "ef30247129e862b85b3db93b3256c87992e56b5fa2c7fe2509eb486c47fd79d1"
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
     },
     {
       "case": {
@@ -187,7 +187,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "6fca0312241df0d3c6d755254dd76990aecbd9954195b38bcf66498f32787ddb"
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
     },
     {
       "case": {
@@ -202,7 +202,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "6fca0312241df0d3c6d755254dd76990aecbd9954195b38bcf66498f32787ddb"
+      "sha256": "e71b4704e73ebdfc952e933e60c5d0e53954bb32c27c8c005781b3345e6e4d96"
     },
     {
       "case": {
@@ -217,7 +217,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "b936d8904a8935277486d6b9589967abb5f0a80b2e0137e11287479fc60d09b2"
+      "sha256": "ce790a239c87d483bb07ed2b8cf50739c392a3d57977bcf51e84acb92f8dcd3e"
     },
     {
       "case": {
@@ -232,7 +232,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "8729b43a19de28d04ec93d16c7fec53c5c8d407ab9259fc1d8d87993faf03b63"
+      "sha256": "7b8f303deac46aaa444a0a48a7957e87e0a85a0cd88be2a7475d9c37bf782742"
     },
     {
       "case": {
@@ -247,7 +247,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "35acf3bbfffbc1227d7aa56dedd98c4e06aaefcb8ffd1ae9afabdfffaa43a3cc"
+      "sha256": "1eaa77268979b3c91e2b5540930631fdf51773191978ce8d1535eab8a93b6482"
     },
     {
       "case": {
@@ -262,7 +262,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "4b3971e52b459616242f8cc08c5339e84cf1f034c591a52ec59b0b14863295f9"
+      "sha256": "f6ccf3cbf503d5361ef613bfb712ef6b1e1a83b2ebbfebe786d299247bf0da53"
     }
   ]
 }

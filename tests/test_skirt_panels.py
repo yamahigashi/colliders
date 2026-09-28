@@ -591,10 +591,10 @@ class SkirtPanelTests(unittest.TestCase):
                                     a, b = self.metadata(node, index)[:2]
                                     if a <= material + 1 <= b:
                                         hits.append((index, a, b, material + 1))
-                            for index, a, b, s in hits:
-                                self.assert_position(
-                                    self.patch(node, index).getPointAtParam((s - a) / (b - a), v), expected, 2e-6
-                                )
+                            positions = [self.patch(node, index).getPointAtParam((s - a) / (b - a), v) for index, a, b, s in hits]
+                            for position in positions:
+                                self.assertLessEqual((om.MPoint(position) - om.MPoint(expected)).length(), 2e-6,
+                                                     ((u, v), hits, tuple(expected)[:3], tuple(position)[:3]))
                     for index in (8, 15):
                         cmds.removeMultiInstance(node + ".seams[{}]".format(index), b=True)
                     self.seam(node, 8, 0.7, 0.5)

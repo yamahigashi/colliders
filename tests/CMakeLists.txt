@@ -15,7 +15,7 @@ if(Maya_FOUND)
         add_test(NAME ${test_name} COMMAND ${test_name}_test)
     endforeach()
 
-    foreach(test_name solver_input relax_solver_reference row_solver_reference skirt_panel_reference)
+    foreach(test_name solver_input relax_solver_reference row_solver_reference row_suspension skirt_panel_reference)
         add_executable(${test_name}_test ${test_name}_test.cpp ../sources/bellColliderSolver.cpp)
         target_compile_features(${test_name}_test PRIVATE cxx_std_11)
         target_include_directories(${test_name}_test PRIVATE ../sources "${MAYA_DEVKIT_DIR}/include")

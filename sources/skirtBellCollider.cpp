@@ -25,6 +25,7 @@
 #include <maya/MVector.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -556,6 +557,13 @@ struct SkirtRowComponent
     bool periodic = false;
 };
 
+struct SkirtRowRelaxBranch
+{
+    std::vector<PreparedBellRing> rings;
+    std::vector<std::vector<double>> componentWeights;
+    double weight = 0.0;
+};
+
 struct SkirtRow
 {
     SkirtHeight height;
@@ -569,6 +577,14 @@ struct SkirtRow
     std::vector<PreparedBellRing> normalRings;
     std::vector<PreparedBellRing> without;
     std::vector<PreparedBellRing> with;
+    std::vector<PreparedBellRing> relaxRings;
+    std::vector<std::vector<double>> relaxWeights;
+    std::array<SkirtRowRelaxBranch, 4> relaxBranches;
+    unsigned int activeRelaxBranches = 0;
+    bool belowKnee = false;
+    BellRowCorrespondence upCorrespondence;
+    BellRowCorrespondence downCorrespondence;
+    BellRowCorrespondence aboveCorrespondence;
 };
 
 struct SkirtSegment
@@ -1847,8 +1863,117 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
         rows.push_back(std::move(row));
     }
     const bool validFollowRange = std::isfinite(followRange) && followRange >= 0.0;
-    for (auto &row : rows)
+    // Rows are joined only through the physical layout: seam rows are skipped when
+    // looking for the anchor above and the smoothing neighbours.
+    std::vector<int> smoothUp(rows.size(), -1), smoothDown(rows.size(), -1);
+    for (size_t r = 0; r < rows.size(); ++r)
     {
+        for (int k = static_cast<int>(r) - 1; k >= 0; --k)
+            if (rows[k].height.physical >= 0)
+            {
+                smoothUp[r] = k;
+                break;
+            }
+        for (size_t k = r + 1; k < rows.size(); ++k)
+            if (rows[k].height.physical >= 0)
+            {
+                smoothDown[r] = static_cast<int>(k);
+                break;
+            }
+    }
+    if (skirtType == 1 && !hasNoEffect)
+        for (size_t r = 0; r < rows.size(); ++r)
+        {
+            if (smoothUp[r] >= 0)
+            {
+                stat = BellColliderSolver::buildRowCorrespondence(rows[smoothUp[r]].topology, rows[r].topology,
+                                                                  rows[r].upCorrespondence);
+                if (!stat)
+                    return skirtError(thisMObject(), 9, "row anchor correspondence failed.");
+            }
+            if (smoothDown[r] >= 0)
+            {
+                stat = BellColliderSolver::buildRowCorrespondence(rows[smoothDown[r]].topology, rows[r].topology,
+                                                                  rows[r].downCorrespondence);
+                if (!stat)
+                    return skirtError(thisMObject(), 9, "row smoothing correspondence failed.");
+            }
+            if (smoothUp[r] >= 0 && smoothUp[smoothUp[r]] >= 0 && rows[r].height.t > physicalHeights[2])
+            {
+                stat = BellColliderSolver::buildRowCorrespondence(rows[smoothUp[smoothUp[r]]].topology,
+                                                                  rows[r].topology, rows[r].aboveCorrespondence);
+                if (!stat)
+                    return skirtError(thisMObject(), 9, "row above-anchor correspondence failed.");
+            }
+        }
+    const auto mixPoints = [](const MPointArray &points, double weight, bool first, unsigned int activeBranches,
+                              MPointArray &mixed) {
+        if (activeBranches == 1)
+            mixed = points;
+        else
+        {
+            if (first)
+                mixed.setLength(points.length());
+            for (unsigned int i = 0; i < points.length(); ++i)
+                mixed[i] = first ? points[i] * weight : mixed[i] + points[i] * weight;
+        }
+    };
+    const auto relaxSolvedRow = [&](SkirtRow &row) {
+        const auto relax = [&](MPointArray &points, const std::vector<PreparedBellRing> &rings,
+                               const std::vector<std::vector<double>> &weights) {
+            const std::vector<double> none;
+            for (size_t i = 0; i < rings.size(); ++i)
+                BellColliderSolver::relaxRowFaded(points, rings[i],
+                                                  row.belowKnee && i >= row.without.size() ? 1.0 - tightness : 1.0,
+                                                  true, row.topology, i < weights.size() ? weights[i] : none,
+                                                  BellColliderSolver::rowDirections(points, row.base));
+        };
+        if (row.activeRelaxBranches == 0)
+            relax(row.points, row.relaxRings, row.relaxWeights);
+        else
+        {
+            std::vector<MPointArray> results;
+            std::vector<double> weights;
+            for (const auto &branch : row.relaxBranches)
+            {
+                if (!(branch.weight > 0.0))
+                    continue;
+                results.push_back(row.points);
+                relax(results.back(), branch.rings, branch.componentWeights);
+                weights.push_back(branch.weight);
+            }
+            // A point that every branch leaves at the same place keeps its bits; the
+            // weighted sum is only formed where the branches differ.
+            for (unsigned int i = 0; i < row.points.length(); ++i)
+            {
+                bool same = true;
+                for (size_t b = 1; b < results.size(); ++b)
+                    same = same && results[b][i].x == results[0][i].x && results[b][i].y == results[0][i].y &&
+                           results[b][i].z == results[0][i].z && results[b][i].w == results[0][i].w;
+                if (same)
+                {
+                    row.points[i] = results[0][i];
+                    continue;
+                }
+                MPoint mixed = results[0][i] * weights[0];
+                for (size_t b = 1; b < results.size(); ++b)
+                    mixed = mixed + results[b][i] * weights[b];
+                row.points[i] = mixed;
+            }
+        }
+    };
+    const auto suspendRow = [&](SkirtRow &row, const SkirtRow *anchorRow, const SkirtRow *aboveRow) -> MStatus {
+        const MStatus status = BellColliderSolver::projectSuspendedRow(
+            anchorRow->points, anchorRow->base, row.upCorrespondence, aboveRow ? &aboveRow->points : nullptr,
+            aboveRow ? &row.aboveCorrespondence : nullptr, row.base, row.points, row.points);
+        if (!status)
+            return status;
+        relaxSolvedRow(row);
+        return MS::kSuccess;
+    };
+    for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex)
+    {
+        SkirtRow &row = rows[rowIndex];
         const double distance = h_val * row.height.t;
         const auto &normalRings = row.normalRings;
         const auto &without = row.without;
@@ -1880,6 +2005,7 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
             continue;
         }
         const bool belowKnee = skirtType == 1 && row.height.t > physicalHeights[2];
+        row.belowKnee = belowKnee;
         auto solve = [&](const std::vector<PreparedBellRing> &rings, BellRowOutputs &output) {
             BellRowInputs input;
             input.bellMatrix = row.matrix;
@@ -1894,8 +2020,96 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
             input.physicalLevel = row.parent;
             return BellColliderSolver::solveRow(input, row.base, row.topology, output);
         };
+        double bendLeft = 0.0;
+        double bendRight = 0.0;
+        if (skirtType == 1 && belowKnee && normalRings.size() == 4 && with.size() == 4 && without.size() == 2)
+        {
+            const auto bend = [](const std::array<MPoint, 3> &joints, double width) {
+                const MVector thigh = joints[1] - joints[0];
+                const double thighLength = thigh.length();
+                const double calfLength = (joints[2] - joints[1]).length();
+                if (thighLength <= 1e-6 || calfLength <= 1e-6)
+                    return 0.0;
+                if (!(width > 1e-5))
+                    return 0.0;
+                const MVector direction = thigh / thighLength;
+                const MPoint extendedHeel = joints[1] + direction * calfLength;
+                const double delta = (joints[2] - extendedHeel).length();
+                const double q = std::max(0.0, std::min(1.0, delta / width));
+                if (q <= 1e-6)
+                    return 0.0;
+                return q * q * (3.0 - 2.0 * q);
+            };
+            bendLeft = bend(ringFrames.leftJoints, normalRings[0].distalWidth);
+            bendRight = bend(ringFrames.rightJoints, normalRings[1].distalWidth);
+        }
+        const bool fadeExtended = (bendLeft > 0.0 || bendRight > 0.0) && tightness < 1.0f;
+        std::vector<PreparedBellRing> branchRings[4];
+        BellRowOutputs branches[4];
+        double branchWeights[4] = {};
+        unsigned int activeBranches = 0;
         BellRowOutputs solution;
-        if (belowKnee && tightness > 0.0f && tightness < 1.0f)
+        if (fadeExtended)
+        {
+            // Preserve this summation order: both, left only, right only, neither.
+            branchWeights[0] = (1.0 - bendLeft) * (1.0 - bendRight);
+            branchWeights[1] = (1.0 - bendLeft) * bendRight;
+            branchWeights[2] = bendLeft * (1.0 - bendRight);
+            branchWeights[3] = bendLeft * bendRight;
+            for (size_t branch = 0; branch < 4; ++branch)
+            {
+                if (branchWeights[branch] > 0.0)
+                    ++activeBranches;
+                // The neither branch also supplies the tightness solve.
+                if (!(branchWeights[branch] > 0.0) && !(branch == 3 && tightness > 0.0f))
+                    continue;
+                auto &rings = branchRings[branch];
+                rings = without;
+                if (branch == 0 || branch == 1)
+                    rings.push_back(with[2]);
+                if (branch == 0 || branch == 2)
+                    rings.push_back(with[3]);
+                stat = solve(rings, branches[branch]);
+                if (!stat || branches[branch].points.length() != row.base.length() ||
+                    branches[branch].directField.values.size() != row.base.length())
+                    return skirtError(thisMObject(), 9, "row solve failed for a knee-to-hem component.");
+            }
+            bool first = true;
+            for (size_t branch = 0; branch < 4; ++branch)
+            {
+                const double weight = branchWeights[branch];
+                if (!(weight > 0.0))
+                    continue;
+                const auto &output = branches[branch];
+                mixPoints(output.points, weight, first, activeBranches, solution.points);
+                if (activeBranches == 1)
+                    solution.directField.values = output.directField.values;
+                else
+                {
+                    if (first)
+                        solution.directField.values.resize(row.base.length());
+                    for (unsigned int i = 0; i < row.base.length(); ++i)
+                    {
+                        const MVector value = output.directField.values[i] * weight;
+                        if (first)
+                            solution.directField.values[i] = value;
+                        else
+                            solution.directField.values[i] += value;
+                    }
+                }
+                first = false;
+            }
+            solution.directField.topology = row.topology;
+            if (tightness > 0.0f && !(bendLeft == 1.0 && bendRight == 1.0))
+                for (unsigned int i = 0; i < solution.points.length(); ++i)
+                {
+                    solution.points[i] =
+                        solution.points[i] * (1.0 - tightness) + branches[3].points[i] * tightness;
+                    solution.directField.values[i] = solution.directField.values[i] * (1.0 - tightness) +
+                                                     branches[3].directField.values[i] * tightness;
+                }
+        }
+        else if (belowKnee && tightness > 0.0f && tightness < 1.0f)
         {
             BellRowOutputs other;
             stat = solve(with, solution);
@@ -1915,6 +2129,22 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
             stat = solve(belowKnee ? (tightness >= 1.0f ? without : with) : normalRings, solution);
             if (!stat)
                 return skirtError(thisMObject(), 9, "row solve failed for a material component.");
+        }
+        if (fadeExtended)
+        {
+            row.activeRelaxBranches = activeBranches;
+            for (size_t branch = 0; branch < 4; ++branch)
+                if (branchWeights[branch] > 0.0)
+                {
+                    row.relaxBranches[branch].rings = branchRings[branch];
+                    row.relaxBranches[branch].componentWeights = branches[branch].componentWeights;
+                    row.relaxBranches[branch].weight = branchWeights[branch];
+                }
+        }
+        else
+        {
+            row.relaxRings = belowKnee ? (tightness >= 1.0f ? without : with) : normalRings;
+            row.relaxWeights = solution.componentWeights;
         }
         row.points = solution.points;
         row.direct = solution.directField;
@@ -1949,31 +2179,48 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
                     row.points[i] += propagation[i] * (follow * (1.0 - rowTightness));
         }
         if (receives)
+            relaxSolvedRow(row);
+        if (belowKnee && smoothUp[rowIndex] >= 0)
         {
-            // The weights of a ring depend only on the ring and the base row, so
-            // the weights of the primary solve serve every ring list: with[i] and
-            // without[i] are the same ring for i below without.size().
-            const auto &weights = solution.componentWeights;
-            const auto weightsFor = [&](size_t index) -> const std::vector<double> & {
-                static const std::vector<double> none;
-                return index < weights.size() ? weights[index] : none;
-            };
-            if (belowKnee)
+            const int anchorIndex = smoothUp[rowIndex];
+            const int aboveIndex = smoothUp[anchorIndex];
+            stat = suspendRow(row, &rows[anchorIndex], aboveIndex >= 0 ? &rows[aboveIndex] : nullptr);
+            if (!stat)
+                return skirtError(thisMObject(), 9, "row suspension anchor transfer failed.");
+        }
+    }
+    // With seams the rows below a seam start are split into panels whose free edges are not
+    // lifted; smoothing across rows would carry those edges into the shared rows above.
+    if (skirtType == 1 && rows.size() >= 3 && !hasNoEffect && settings.seams.empty())
+    {
+        for (int iteration = 0; iteration < 2; ++iteration)
+        {
+            for (size_t r = 1; r + 1 < rows.size(); ++r)
             {
-                for (size_t i = 0; i < without.size(); ++i)
-                    BellColliderSolver::relaxRowFaded(row.points, without[i], 1.0, true, row.topology, weightsFor(i),
-                                                      BellColliderSolver::rowDirections(row.points, row.base));
-                if (tightness < 1.0f)
-                    for (size_t i = 2; i < with.size(); ++i)
-                        BellColliderSolver::relaxRowFaded(row.points, with[i], 1.0 - tightness, true, row.topology,
-                                                          weightsFor(i),
-                                                          BellColliderSolver::rowDirections(row.points, row.base));
+                SkirtRow &row = rows[r];
+                if (row.height.physical == 0 || smoothUp[r] < 0 || smoothDown[r] < 0)
+                    continue;
+                const SkirtRow &up = rows[smoothUp[r]];
+                const SkirtRow &down = rows[smoothDown[r]];
+
+                stat = BellColliderSolver::smoothRowDisplacements(up.base, up.points, row.upCorrespondence,
+                                                                  row.base, row.points, down.base, down.points,
+                                                                  row.downCorrespondence, row.points);
+                if (!stat)
+                    return skirtError(thisMObject(), 9, "row displacement smoothing failed.");
+                relaxSolvedRow(row);
             }
-            else
-                for (size_t i = 0; i < normalRings.size(); ++i)
-                    BellColliderSolver::relaxRowFaded(row.points, normalRings[i], 1.0, true, row.topology,
-                                                      weightsFor(i),
-                                                      BellColliderSolver::rowDirections(row.points, row.base));
+            for (size_t r = 1; r < rows.size(); ++r)
+            {
+                SkirtRow &row = rows[r];
+                if (row.height.physical == 0 || !row.belowKnee || smoothUp[r] < 0)
+                    continue;
+                const int anchorIndex = smoothUp[r];
+                const int aboveIndex = smoothUp[anchorIndex];
+                stat = suspendRow(row, &rows[anchorIndex], aboveIndex >= 0 ? &rows[aboveIndex] : nullptr);
+                if (!stat)
+                    return skirtError(thisMObject(), 9, "row suspension anchor transfer failed.");
+            }
         }
     }
 

@@ -1159,29 +1159,28 @@ MStatus BellColliderSolver::solveRow(const BellRowInputs &inputs, const MPointAr
     return MS::kSuccess;
 }
 
-MStatus BellColliderSolver::transferDirectField(const BellDirectField &source, const BellRowTopology &destination,
-                                                BellRowTransfer &transfer)
+void BellColliderSolver::transferRowValuesImpl(const BellRowTopology &source, const BellRowTopology &destination,
+                                               BellRowCorrespondence &correspondence)
 {
-    if (!validRowTopology(source.topology, source.values.size()) || !finiteRowVectors(source.values) ||
-        !validRowTopology(destination, destination.vertices.size()))
-        return MS::kInvalidParameter;
-    std::vector<MVector> result(destination.vertices.size(), MVector(0, 0, 0));
-    std::vector<std::vector<size_t>> members(source.topology.components.size());
-    for (size_t i = 0; i < source.values.size(); ++i)
-        members[source.topology.vertices[i].componentId].push_back(i);
+    correspondence = BellRowCorrespondence();
+    correspondence.sourceCount = source.vertices.size();
+    correspondence.entries.resize(destination.vertices.size());
+    std::vector<std::vector<size_t>> members(source.components.size());
+    for (size_t i = 0; i < source.vertices.size(); ++i)
+        members[source.vertices[i].componentId].push_back(i);
     for (auto &indices : members)
-        std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
-            return source.topology.vertices[a].materialU < source.topology.vertices[b].materialU;
-        });
+        std::sort(indices.begin(), indices.end(),
+                  [&](size_t a, size_t b) { return source.vertices[a].materialU < source.vertices[b].materialU; });
     for (size_t i = 0; i < destination.vertices.size(); ++i)
     {
+        auto &entry = correspondence.entries[i];
         const auto &target = destination.vertices[i];
         for (size_t c = 0; c < members.size(); ++c)
         {
-            const auto &component = source.topology.components[c];
+            const auto &component = source.components[c];
             const auto &indices = members[c];
-            const auto &first = source.topology.vertices[indices.front()];
-            const auto &last = source.topology.vertices[indices.back()];
+            const auto &first = source.vertices[indices.front()];
+            const auto &last = source.vertices[indices.back()];
             double u = target.materialU;
             if (component.closed)
                 u -= std::floor(u - first.materialU);
@@ -1218,30 +1217,248 @@ MStatus BellColliderSolver::transferDirectField(const BellDirectField &source, c
                 }
             }
             if (u <= first.materialU || indices.size() == 1)
-                result[i] = source.values[indices.front()];
+                entry.left = indices.front();
             else if (u >= last.materialU && !component.closed)
-                result[i] = source.values[indices.back()];
+                entry.left = indices.back();
             else
             {
                 size_t right = 0;
-                while (right < indices.size() && source.topology.vertices[indices[right]].materialU < u)
+                while (right < indices.size() && source.vertices[indices[right]].materialU < u)
                     ++right;
-                if (right < indices.size() && source.topology.vertices[indices[right]].materialU == u)
-                    result[i] = source.values[indices[right]];
+                if (right < indices.size() && source.vertices[indices[right]].materialU == u)
+                    entry.left = indices[right];
                 else
                 {
                     const size_t leftIndex = indices[right - 1];
                     const size_t rightIndex = right == indices.size() ? indices.front() : indices[right];
-                    const double leftU = source.topology.vertices[leftIndex].materialU;
-                    const double rightU =
-                        source.topology.vertices[rightIndex].materialU + (right == indices.size() ? 1.0 : 0.0);
+                    const double leftU = source.vertices[leftIndex].materialU;
+                    const double rightU = source.vertices[rightIndex].materialU + (right == indices.size() ? 1.0 : 0.0);
                     const double lambda = (u - leftU) / (rightU - leftU);
-                    result[i] = source.values[leftIndex] * (1.0 - lambda) + source.values[rightIndex] * lambda;
+                    entry.left = leftIndex;
+                    entry.right = rightIndex;
+                    entry.lambda = lambda;
+                    entry.interpolate = true;
                 }
             }
+            entry.matched = true;
             break;
         }
     }
-    transfer.values.swap(result);
+    correspondence.valid = true;
+}
+
+void BellColliderSolver::applyRowCorrespondence(const std::vector<MVector> &values,
+                                                const BellRowCorrespondence &correspondence, std::vector<MVector> &out,
+                                                std::vector<bool> &matched)
+{
+    std::vector<MVector> result(correspondence.entries.size(), MVector(0, 0, 0));
+    matched.assign(correspondence.entries.size(), false);
+    for (size_t i = 0; i < correspondence.entries.size(); ++i)
+    {
+        const auto &entry = correspondence.entries[i];
+        if (!entry.matched)
+            continue;
+        result[i] = entry.interpolate ? values[entry.left] * (1.0 - entry.lambda) + values[entry.right] * entry.lambda
+                                      : values[entry.left];
+        matched[i] = true;
+    }
+    out.swap(result);
+}
+
+MStatus BellColliderSolver::transferDirectField(const BellDirectField &source, const BellRowTopology &destination,
+                                                BellRowTransfer &transfer)
+{
+    if (!validRowTopology(source.topology, source.values.size()) || !finiteRowVectors(source.values) ||
+        !validRowTopology(destination, destination.vertices.size()))
+        return MS::kInvalidParameter;
+    BellRowCorrespondence correspondence;
+    transferRowValuesImpl(source.topology, destination, correspondence);
+    std::vector<bool> matched;
+    applyRowCorrespondence(source.values, correspondence, transfer.values, matched);
+    return MS::kSuccess;
+}
+
+MStatus BellColliderSolver::buildRowCorrespondence(const BellRowTopology &source, const BellRowTopology &destination,
+                                                   BellRowCorrespondence &correspondence)
+{
+    if (!validRowTopology(source, source.vertices.size()) ||
+        !validRowTopology(destination, destination.vertices.size()))
+        return MS::kInvalidParameter;
+    transferRowValuesImpl(source, destination, correspondence);
+    return MS::kSuccess;
+}
+
+MStatus BellColliderSolver::transferRowValues(const std::vector<MVector> &values, const BellRowTopology &source,
+                                              const BellRowTopology &destination, std::vector<MVector> &out,
+                                              std::vector<bool> &matched)
+{
+    BellRowCorrespondence correspondence;
+    const MStatus status = buildRowCorrespondence(source, destination, correspondence);
+    if (!status)
+        return status;
+    return transferRowValues(values, correspondence, out, matched);
+}
+
+MStatus BellColliderSolver::transferRowValues(const std::vector<MVector> &values,
+                                              const BellRowCorrespondence &correspondence, std::vector<MVector> &out,
+                                              std::vector<bool> &matched)
+{
+    if (!correspondence.valid || values.size() != correspondence.sourceCount || !finiteRowVectors(values))
+        return MS::kInvalidParameter;
+    std::vector<MVector> result;
+    std::vector<bool> resultMatched;
+    applyRowCorrespondence(values, correspondence, result, resultMatched);
+    if (!finiteRowVectors(result))
+        return MS::kInvalidParameter;
+    out.swap(result);
+    matched.swap(resultMatched);
+    return MS::kSuccess;
+}
+
+MStatus BellColliderSolver::projectSuspendedRow(const MPointArray &anchorFinal, const MPointArray &anchorBase,
+                                                const BellRowTopology &anchorTopology, const MPointArray *aboveFinal,
+                                                const BellRowTopology *aboveTopology, const MPointArray &base,
+                                                const MPointArray &current, const BellRowTopology &topology,
+                                                MPointArray &out)
+{
+    if ((aboveFinal == nullptr) != (aboveTopology == nullptr))
+        return MS::kInvalidParameter;
+    BellRowCorrespondence anchor, above;
+    MStatus status = buildRowCorrespondence(anchorTopology, topology, anchor);
+    if (status && aboveTopology)
+        status = buildRowCorrespondence(*aboveTopology, topology, above);
+    if (!status)
+        return status;
+    return projectSuspendedRow(anchorFinal, anchorBase, anchor, aboveFinal, aboveTopology ? &above : nullptr, base,
+                               current, out);
+}
+
+MStatus BellColliderSolver::projectSuspendedRow(const MPointArray &anchorFinal, const MPointArray &anchorBase,
+                                                const BellRowCorrespondence &anchor, const MPointArray *aboveFinal,
+                                                const BellRowCorrespondence *above, const MPointArray &base,
+                                                const MPointArray &current, MPointArray &out)
+{
+    if (!anchor.valid || anchorFinal.length() != anchor.sourceCount || anchorBase.length() != anchor.sourceCount ||
+        base.length() != anchor.entries.size() || current.length() != base.length() || !finiteRowPoints(anchorFinal) ||
+        !finiteRowPoints(anchorBase) || !finiteRowPoints(base) || !finiteRowPoints(current) ||
+        (aboveFinal == nullptr) != (above == nullptr))
+        return MS::kInvalidParameter;
+    if (above && (!above->valid || aboveFinal->length() != above->sourceCount ||
+                  above->entries.size() != base.length() || !finiteRowPoints(*aboveFinal)))
+        return MS::kInvalidParameter;
+    std::vector<MVector> finalValues, baseValues, aboveValues;
+    for (unsigned int i = 0; i < anchorFinal.length(); ++i)
+    {
+        finalValues.push_back(MVector(anchorFinal[i]));
+        baseValues.push_back(MVector(anchorBase[i]));
+    }
+    std::vector<MVector> a, ab, c;
+    std::vector<bool> am, abm, cm;
+    MStatus status = transferRowValues(finalValues, anchor, a, am);
+    if (status)
+        status = transferRowValues(baseValues, anchor, ab, abm);
+    if (status && above)
+    {
+        for (unsigned int i = 0; i < aboveFinal->length(); ++i)
+            aboveValues.push_back(MVector((*aboveFinal)[i]));
+        status = transferRowValues(aboveValues, *above, c, cm);
+    }
+    if (!status)
+        return status;
+    MPointArray result = current;
+    for (unsigned int i = 0; i < base.length(); ++i)
+    {
+        if (!am[i] || !abm[i])
+            continue;
+        const double ell = (MVector(base[i]) - ab[i]).length();
+        const MVector offset = MVector(current[i]) - a[i];
+        const double d = offset.length();
+        if (!std::isfinite(ell) || !std::isfinite(d))
+            return MS::kInvalidParameter;
+        if (d <= ell)
+            continue;
+        if (ell == 0.0)
+        {
+            result[i] = MPoint(a[i]);
+            continue;
+        }
+        MVector e = offset / d;
+        if (above && cm[i] && ell > 1e-12)
+        {
+            const MVector incoming = a[i] - c[i];
+            const double length = incoming.length();
+            if (!std::isfinite(length))
+                return MS::kInvalidParameter;
+            if (length > 1e-12)
+            {
+                const double x = (d - ell) / ell;
+                const double t = (std::max)(0.0, (std::min)(1.0, x));
+                const double k = 0.5 * t * t * (3.0 - 2.0 * t);
+                const MVector q = e * (1.0 - k) + (incoming / length) * k;
+                const double qLength = q.length();
+                if (qLength > 1e-12)
+                    e = q / qLength;
+            }
+        }
+        result[i] = MPoint(a[i] + e * ell);
+    }
+    if (!finiteRowPoints(result))
+        return MS::kInvalidParameter;
+    out = result;
+    return MS::kSuccess;
+}
+
+MStatus BellColliderSolver::smoothRowDisplacements(const MPointArray &upBase, const MPointArray &upCurrent,
+                                                   const BellRowTopology &upTopology, const MPointArray &base,
+                                                   const MPointArray &current, const BellRowTopology &topology,
+                                                   const MPointArray &downBase, const MPointArray &downCurrent,
+                                                   const BellRowTopology &downTopology, MPointArray &out)
+{
+    BellRowCorrespondence up, down;
+    MStatus status = buildRowCorrespondence(upTopology, topology, up);
+    if (status)
+        status = buildRowCorrespondence(downTopology, topology, down);
+    if (!status)
+        return status;
+    return smoothRowDisplacements(upBase, upCurrent, up, base, current, downBase, downCurrent, down, out);
+}
+
+MStatus BellColliderSolver::smoothRowDisplacements(const MPointArray &upBase, const MPointArray &upCurrent,
+                                                   const BellRowCorrespondence &up, const MPointArray &base,
+                                                   const MPointArray &current, const MPointArray &downBase,
+                                                   const MPointArray &downCurrent, const BellRowCorrespondence &down,
+                                                   MPointArray &out)
+{
+    if (!up.valid || !down.valid || upBase.length() != up.sourceCount || upCurrent.length() != up.sourceCount ||
+        downBase.length() != down.sourceCount || downCurrent.length() != down.sourceCount ||
+        base.length() != up.entries.size() || base.length() != down.entries.size() ||
+        current.length() != base.length() || !finiteRowPoints(upBase) || !finiteRowPoints(upCurrent) ||
+        !finiteRowPoints(base) || !finiteRowPoints(current) || !finiteRowPoints(downBase) ||
+        !finiteRowPoints(downCurrent))
+        return MS::kInvalidParameter;
+    std::vector<MVector> upValues, downValues, u, d;
+    for (unsigned int i = 0; i < upBase.length(); ++i)
+        upValues.push_back(upCurrent[i] - upBase[i]);
+    for (unsigned int i = 0; i < downBase.length(); ++i)
+        downValues.push_back(downCurrent[i] - downBase[i]);
+    std::vector<bool> um, dm;
+    MStatus status = transferRowValues(upValues, up, u, um);
+    if (status)
+        status = transferRowValues(downValues, down, d, dm);
+    if (!status)
+        return status;
+    MPointArray result = current;
+    for (unsigned int i = 0; i < base.length(); ++i)
+    {
+        if (!um[i] || !dm[i])
+            continue;
+        const MVector displacement = current[i] - base[i];
+        const MVector next = displacement + ((u[i] + d[i]) * 0.5 - displacement) * 0.5;
+        if (next.x != 0.0 || next.y != 0.0 || next.z != 0.0)
+            result[i] = base[i] + next;
+    }
+    if (!finiteRowPoints(result))
+        return MS::kInvalidParameter;
+    out = result;
     return MS::kSuccess;
 }
