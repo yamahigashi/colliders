@@ -32,6 +32,11 @@ add_executable(benchmark_relax_kernel benchmark_relax_kernel.cpp)
 target_compile_features(benchmark_relax_kernel PRIVATE cxx_std_11)
 target_include_directories(benchmark_relax_kernel PRIVATE ../sources)
 
+add_executable(relax_kernel_direction_test relax_kernel_direction_test.cpp)
+target_compile_features(relax_kernel_direction_test PRIVATE cxx_std_11)
+target_include_directories(relax_kernel_direction_test PRIVATE ../sources)
+add_test(NAME relax_kernel_direction COMMAND relax_kernel_direction_test)
+
 add_executable(nurbs_refit_kernel_test nurbs_refit_kernel_test.cpp)
 target_compile_features(nurbs_refit_kernel_test PRIVATE cxx_std_11)
 target_include_directories(nurbs_refit_kernel_test PRIVATE ../sources)

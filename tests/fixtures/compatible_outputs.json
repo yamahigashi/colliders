@@ -1,12 +1,12 @@
 {
   "provenance": {
-    "source_commit": "working tree after b83a84a (seam support, version 5.0.0)",
+    "source_commit": "90cad24 + thigh ring distal end (2026-09-27)",
     "maya": "2026",
     "python": "3.11.9 (tags/v3.11.9-dirty:de54cf5be37, Oct 18 2024, 09:47:19) [MSC v.1938 64 bit (AMD64)]",
-    "baseline_binary_sha256": "4d571eadd79be576b74f7405bb6456049d83f3c7ff440da1b9f6fcc17fa20225",
+    "baseline_binary_sha256": "8f43aa0b0dbff037e47cbd59f638d862861d80bc134fa80f8e3bd63fe2cc36d3",
     "encoding": "SHA-256 of little-endian IEEE754 doubles (x, y, z, w), Maya CV order",
     "scope": "12 default cases and 5 smoothing cases; U1 probes excluded",
-    "note": "Regenerated 2026-09-21 after the seam support; differs from 4.2.0 in the smoothing/follow cases (max 1.13) and in two tightness 0.5 cases (blend before rounding, max 0.0)."
+    "note": "thigh ring distal end: Knee and Extended rings fade the directional relax displacement to zero over the band L to L + w beyond the ring length (w = min(L, max profile radius)); Heel, yddBellCollider and the old relax overload unchanged. Accepted by the user on 2026-09-27 after renders and multi-scene measurements (docs/validation/thigh-ring-distal-end.md)"
   },
   "cases": [
     {
@@ -112,7 +112,7 @@
         }
       },
       "point_count": 57,
-      "sha256": "60d426f7ecff94368e84ccf1915a4154d3507291ec7421e26dc13d9fdb402b54"
+      "sha256": "c82cb740dfa155f71e76350613d103c513c1fd9237f007c1b651409fd436d861"
     },
     {
       "case": {
@@ -127,7 +127,7 @@
         }
       },
       "point_count": 57,
-      "sha256": "beee2c5273196438a4389d07caf849ff04813270404ee2ef336e3b038979c469"
+      "sha256": "f43183f532d3a130d1df5999fec42cc2e67f810328c6d925663c3d6510cb1bba"
     },
     {
       "case": {
@@ -142,7 +142,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "2b2bf160420652cb07fdc48217d9fdfe56ca6e9dab865cf96a680531ceef7f0a"
+      "sha256": "efd88bd84921e4d7766a97b590e82dcd879ce2c995c6fb861141d85eae276b50"
     },
     {
       "case": {
@@ -157,7 +157,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "60f728a5775c55c56f549b4d1adcdfd7056b01fae2aeb1e361556e8c98941f4e"
+      "sha256": "31defadb6cfa66232c38294df2ff85d967283e1318aec49604ba4ad0315308ba"
     },
     {
       "case": {
@@ -172,7 +172,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "3f4273cca0ec21297e234fd6a1a488502c4f9a39a12aa0dcb963940568796ae0"
+      "sha256": "ef30247129e862b85b3db93b3256c87992e56b5fa2c7fe2509eb486c47fd79d1"
     },
     {
       "case": {
@@ -187,7 +187,7 @@
         }
       },
       "point_count": 76,
-      "sha256": "76da418fdf4b285d759db433c4773646404bc7879fc67936a0e8f18e1cfe1550"
+      "sha256": "6fca0312241df0d3c6d755254dd76990aecbd9954195b38bcf66498f32787ddb"
     },
     {
       "case": {
@@ -202,7 +202,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "76da418fdf4b285d759db433c4773646404bc7879fc67936a0e8f18e1cfe1550"
+      "sha256": "6fca0312241df0d3c6d755254dd76990aecbd9954195b38bcf66498f32787ddb"
     },
     {
       "case": {
@@ -217,7 +217,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "527138bc2523c6a30a2b34a6f17aa372d930efc7f31669992ec707f993666464"
+      "sha256": "b936d8904a8935277486d6b9589967abb5f0a80b2e0137e11287479fc60d09b2"
     },
     {
       "case": {
@@ -232,7 +232,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "bdb13f5124dcfae9e95e9ffd107137861378ad80b3c3d170ce7ce6bcbf0cb8e9"
+      "sha256": "8729b43a19de28d04ec93d16c7fec53c5c8d407ab9259fc1d8d87993faf03b63"
     },
     {
       "case": {
@@ -247,7 +247,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "010acc0f0c3ebc133e5e5193163a41d953b0c1c2780262f03d23651a5bdb68ba"
+      "sha256": "35acf3bbfffbc1227d7aa56dedd98c4e06aaefcb8ffd1ae9afabdfffaa43a3cc"
     },
     {
       "case": {
@@ -262,7 +262,7 @@
         "bent": true
       },
       "point_count": 76,
-      "sha256": "d14f2b230ec33e1029ac56f162e0431543dfb33cadc7358102ced1ae5ca428f4"
+      "sha256": "4b3971e52b459616242f8cc08c5339e84cf1f034c591a52ec59b0b14863295f9"
     }
   ]
 }

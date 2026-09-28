@@ -22,6 +22,9 @@ struct PreparedBellRing
     MPoint translation;
     MVector normal;
     Plane plane;
+    bool distalEnd = false;
+    double distalLength = 0.0;
+    double distalWidth = 0.0;
 };
 
 // Unit circle samples shared by every bell built with the same subdivision in
@@ -127,6 +130,7 @@ struct BellRowOutputs
 class BellColliderSolver
 {
 public:
+  static void prepareDistalEnd(PreparedBellRing &ring, const MMatrix &matrix, bool distal);
   static MStatus solveRow(const BellRowInputs &inputs, const MPointArray &baseRow,
                          const BellRowTopology &topology, BellRowOutputs &outputs);
   static MStatus smoothDisplacements(std::vector<MVector> &displacements, double smoothness,
@@ -139,10 +143,14 @@ public:
   // componentWeights, when given, receives one weight per component for each
   // ring (1 for rings without a rotation).
   // Relax toward one ring, faded for the points of components that ring lifts
-  // with a partial weight (see the row contract); complete for weights 0 and 1.
+  // with a partial weight; complete for weights 0 and 1.
   static void relaxRowFaded(MPointArray &points, const PreparedBellRing &ring, double collision,
                             bool capAtRingOrigin, const BellRowTopology &topology,
                             const std::vector<double> &componentWeights);
+  static void relaxRowFaded(MPointArray &points, const PreparedBellRing &ring, double collision,
+                            bool capAtRingOrigin, const BellRowTopology &topology,
+                            const std::vector<double> &componentWeights, const std::vector<MVector> &directions);
+  static std::vector<MVector> rowDirections(const MPointArray &points, const MPointArray &base);
   static MStatus deformPoints(const BellRowInputs &inputs, const MPointArray &baseRow,
                               const BellRowTopology &topology,
                               const std::vector<std::vector<unsigned int>> &ringSeeds,
@@ -159,11 +167,16 @@ public:
                               const PreparedBellRing &ring, MPoint &bellPoint, MPoint &ringPoint, MPoint &linePoint);
   static void relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
                                       int startIndex, int count, bool capAtRingOrigin = false);
+  static void relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
+                                      int startIndex, int count, bool capAtRingOrigin,
+                                      const std::vector<MVector> &directions, const std::vector<double> &betaScales);
   static void smoothDisplacements(std::vector<MVector> &displacements, double smoothness);
   static MStatus solve(const BellColliderInputs &inputs, const MPointArray &baseBellPoints,
                        BellColliderOutputs &outputs);
 
     static void deformPoints(const BellColliderInputs& inputs, const std::vector<PreparedBellRing>& rings, const MPointArray& baseBellPoints, const Plane& bellPlane, std::vector<MPointArray>& bellPointsList);
+    static MVector mergeDisplacement(const MPointArray& basePoints,
+                                     const std::vector<MPointArray>& ringPoints, unsigned int index);
 private:
-    static void averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const std::vector<MPointArray>& bellPointsList, MPointArray& outBellPoints, bool useUnnormalized);
+    static void averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const std::vector<MPointArray>& bellPointsList, MPointArray& outBellPoints);
 };

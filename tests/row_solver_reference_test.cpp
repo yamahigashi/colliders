@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <limits>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <set>
 #include <utility>
@@ -45,6 +47,131 @@ static void referenceRelax(MPointArray &points, const PreparedBellRing &ring, do
                 points[j] += vec.normal() * (vecProjectedScaled.length() - vecLength) * collision;
         }
     }
+}
+
+static std::vector<MVector> referenceDirections(const MPointArray &points, const MPointArray &base)
+{
+    std::vector<MVector> result(points.length());
+    for (unsigned int i = 0; i < points.length(); ++i)
+    {
+        MPoint p = points[i], b = base[i];
+        if (p.w != 1.0)
+            p.cartesianize();
+        if (b.w != 1.0)
+            b.cartesianize();
+        result[i] = p - b;
+    }
+    return result;
+}
+
+static void referenceDirectionalRelax(MPointArray &points, const PreparedBellRing &ring, double collision, int start,
+                                      int count, bool cap, const std::vector<MVector> &directions,
+                                      const std::vector<double> &scales)
+{
+    if (!(collision > 1e-5))
+        return;
+    MPoint origin = ring.plane.orig, translation = ring.translation;
+    if (origin.w != 1.0)
+        origin.cartesianize();
+    if (translation.w != 1.0)
+        translation.cartesianize();
+    const MVector n = ring.plane.normal;
+    const auto dot = [](const MVector &a, const MVector &b) { return (a.x * b.x + a.y * b.y) + a.z * b.z; };
+    const auto length = [&](const MVector &v) { return std::sqrt(dot(v, v)); };
+    const auto local = [&](const MVector &v) {
+        return MVector((v.x * ring.inverse[0][0] + v.y * ring.inverse[1][0]) + v.z * ring.inverse[2][0],
+                       (v.x * ring.inverse[0][1] + v.y * ring.inverse[1][1]) + v.z * ring.inverse[2][1],
+                       (v.x * ring.inverse[0][2] + v.y * ring.inverse[1][2]) + v.z * ring.inverse[2][2]);
+    };
+    for (int i = start; i < start + count; ++i)
+    {
+        MPoint p = points[i];
+        if (p.w != 1.0)
+            p.cartesianize();
+        const double distance = dot(p - origin, n);
+        const MVector r(p.x - n.x * distance - translation.x, p.y - n.y * distance - translation.y,
+                        p.z - n.z * distance - translation.z);
+        const MVector pl = local(r);
+        const double c2 = pl.x * pl.x + pl.z * pl.z - 1.0;
+        if (!(c2 < 0.0) || (cap && !(distance > 0.0)))
+            continue;
+        double g_d = 1.0;
+        if (ring.distalEnd)
+        {
+            const bool validWidth = ring.distalWidth > 1e-5;
+            const double x = (validWidth ? distance - ring.distalLength : 0.0) /
+                             (validWidth ? ring.distalWidth : 1.0);
+            const double t_d = x > 1.0 ? 1.0 : (x > 0.0 ? x : 0.0);
+            g_d = 1.0 - ((t_d * t_d) * (3.0 - 2.0 * t_d));
+            if ((validWidth && distance > ring.distalLength + ring.distalWidth) || !(g_d > 0.0))
+                continue;
+        }
+        const MVector perpendicular = directions[i] - n * dot(directions[i], n);
+        const double D = length(perpendicular);
+        MVector centre(0, 0, 0);
+        double radius = 1.0, ramp = 0.0;
+        bool shifted = false;
+        if (D > 1e-5)
+        {
+            const MVector unit = perpendicular * (1.0 / D);
+            const MVector m = local(unit * -1.0);
+            const double norm = m.x * m.x + m.z * m.z;
+            if (norm > 0.0 && std::isfinite(norm))
+            {
+                radius = 1.0 / std::sqrt(norm);
+                shifted = true;
+                const double t = (std::max)(0.0, (std::min)(1.0, D / radius));
+                const double beta = (0.5 * (t * t) * (3.0 - 2.0 * t)) * (scales.empty() ? 1.0 : scales[i]);
+                ramp = t * t * (3.0 - 2.0 * t);
+                centre = unit * ((0.0 - beta) * radius);
+            }
+        }
+        const MVector v = r - centre;
+        const double vLength = length(v);
+        if (!(vLength > 1e-5))
+            continue;
+        const MVector q = v * (1.0 / vLength);
+        const MVector ql = local(q);
+        const double a = ql.x * ql.x + ql.z * ql.z;
+        const double b = 2.0 * (pl.x * ql.x + pl.z * ql.z);
+        if (!(a > 1e-12))
+            continue;
+        const double disc = (std::max)(0.0, b * b - (4.0 * a) * c2);
+        const double s = ((0.0 - b) + std::sqrt(disc)) / (2.0 * a);
+        if (!(s > 0.0))
+            continue;
+        double g = 1.0;
+        if (shifted)
+        {
+            const double u = (std::max)(0.0, (std::min)(1.0, vLength / (0.75 * radius)));
+            g = 1.0 - ramp * (1.0 - u * u * (3.0 - 2.0 * u));
+        }
+        MVector displacement = ((q * s) * g) * collision;
+        if (ring.distalEnd)
+            displacement *= g_d;
+        points[i].x += displacement.x;
+        points[i].y += displacement.y;
+        points[i].z += displacement.z;
+    }
+}
+
+static bool directionalCompare(const MPointArray &expected, const MPointArray &actual, double tolerance = 1e-12)
+{
+    if (expected.length() != actual.length())
+        return false;
+    for (unsigned int i = 0; i < expected.length(); ++i)
+    {
+        const MPoint &a = expected[i], &b = actual[i];
+        const auto close = [tolerance](double x, double y) {
+            return sameBits(x, y) || (std::isfinite(x) && std::isfinite(y) && std::abs(x - y) <= tolerance);
+        };
+        if (!close(a.x, b.x) || !close(a.y, b.y) || !close(a.z, b.z) || !sameBits(a.w, b.w))
+        {
+            std::cerr << "directional mismatch index=" << i << "\n";
+            return false;
+        }
+    }
+    return true;
 }
 
 static MPointArray makePoints(int count, int seed)
@@ -915,9 +1042,11 @@ static MPointArray referenceDeform(const BellRowInputs &inputs, const PreparedBe
                 }
             }
     }
-    referenceRelax(points, ring, inputs.collision, 0, static_cast<int>(points.length()), inputs.capAtRingOrigin);
+    referenceDirectionalRelax(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
+                               inputs.capAtRingOrigin, referenceDirections(points, base), {});
     MPointArray still = base;
-    referenceRelax(still, ring, inputs.collision, 0, static_cast<int>(still.length()), inputs.capAtRingOrigin);
+    referenceDirectionalRelax(still, ring, inputs.collision, 0, static_cast<int>(still.length()),
+                               inputs.capAtRingOrigin, std::vector<MVector>(still.length(), MVector(0, 0, 0)), {});
     for (unsigned int i = 0; i < points.length(); ++i)
         if (mask[i] > 0.0 && mask[i] < 1.0)
             points[i] = MPoint(still[i].x * (1.0 - mask[i]) + points[i].x * mask[i],
@@ -947,13 +1076,13 @@ static BellRowOutputs referenceRow(const BellRowInputs &inputs, const MPointArra
     const bool gate = inputs.smoothness > 0.0 || inputs.followGain > 0.0;
     for (unsigned int i = 0; i < base.length(); ++i)
     {
-        double total = 0.0;
-        double maximum = 0.0;
+        double total = 0.0, cubic = 0.0, longest = 0.0;
         for (const auto &response : responses)
         {
             const double length = (response[i] - base[i]).length();
             total += std::pow(length, 2);
-            maximum = (std::max)(maximum, length);
+            cubic += length * length * length;
+            longest = (std::max)(longest, length);
         }
         if (total > 0.0)
         {
@@ -965,10 +1094,8 @@ static BellRowOutputs referenceRow(const BellRowInputs &inputs, const MPointArra
                 const double weight = squared / total;
                 sum += vector * weight;
             }
-            if (gate)
-                result.directDisplacements[i] = sum;
-            else if (sum.length() > 1e-5)
-                result.directDisplacements[i] = sum.normal() * maximum;
+            const double average = cubic / total;
+            result.directDisplacements[i] = average > 0.0 ? sum * (longest / average) : sum;
         }
     }
     result.directField.values =
@@ -986,8 +1113,15 @@ static BellRowOutputs referenceRow(const BellRowInputs &inputs, const MPointArra
         for (size_t r = 0; r < inputs.rings.size(); ++r)
         {
             MPointArray relaxed = result.points;
-            referenceRelax(relaxed, inputs.rings[r], inputs.collision, 0, static_cast<int>(base.length()),
-                           inputs.capAtRingOrigin);
+            std::vector<double> scales(base.length(), 1.0);
+            for (unsigned int i = 0; i < base.length(); ++i)
+            {
+                const double m = masks[r][i];
+                if (m > 0.0 && m < 1.0)
+                    scales[i] = 1.0 - 4.0 * m * (1.0 - m);
+            }
+            referenceDirectionalRelax(relaxed, inputs.rings[r], inputs.collision, 0, static_cast<int>(base.length()),
+                                       inputs.capAtRingOrigin, referenceDirections(result.points, base), scales);
             for (unsigned int i = 0; i < base.length(); ++i)
             {
                 const double m = masks[r][i];
@@ -1170,6 +1304,17 @@ static BellRowOutputs blendRows(const BellRowOutputs &with, const BellRowOutputs
     return result;
 }
 
+static bool directionalVectors(const std::vector<MVector> &a, const std::vector<MVector> &b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (!(std::abs(a[i].x - b[i].x) <= 1e-12 && std::abs(a[i].y - b[i].y) <= 1e-12 &&
+              std::abs(a[i].z - b[i].z) <= 1e-12))
+            return false;
+    return true;
+}
+
 static bool longTightness()
 {
     const auto fixture = chain(5);
@@ -1206,18 +1351,21 @@ static bool longTightness()
             expected.points[i] =
                 MPoint(static_cast<float>(expected.points[i].x), static_cast<float>(expected.points[i].y),
                        static_cast<float>(expected.points[i].z));
-        if (!compare(expected.points, actual.points, 0, 5) ||
-            !sameVectors(expected.directField.values, actual.directField.values))
+        if (!directionalCompare(expected.points, actual.points) ||
+            !directionalVectors(expected.directField.values, actual.directField.values))
             return false;
         for (size_t r = 0; r < withInputs.rings.size(); ++r)
         {
             if (r >= 2 && tightness == 1.0)
                 continue;
             const double collision = r < 2 ? 1.0 : 1.0 - tightness;
-            referenceRelax(expected.points, withInputs.rings[r], collision, 0, 5, true);
-            BellColliderSolver::relaxTowardRingBoundary(actual.points, withInputs.rings[r], collision, 0, 5, true);
+            // Post-follow relaxation uses the displacement after the preceding ring.
+            referenceDirectionalRelax(expected.points, withInputs.rings[r], collision, 0, 5, true,
+                                       referenceDirections(expected.points, base), {});
+            BellColliderSolver::relaxRowFaded(actual.points, withInputs.rings[r], collision, true, topology, {},
+                                               referenceDirections(actual.points, base));
         }
-        if (!compare(expected.points, actual.points, 0, 5))
+        if (!directionalCompare(expected.points, actual.points))
             return false;
         for (double materialT : {0.49, 0.5, 0.51, 0.75})
             for (double mappedT : {0.4, 0.8})
@@ -1253,7 +1401,8 @@ static MPointArray waistComposition(const MPointArray &base, const BellRowTopolo
 {
     MPointArray result = base;
     for (const auto &ring : rings)
-        BellColliderSolver::relaxTowardRingBoundary(result, ring, 1.0, 0, static_cast<int>(result.length()), true);
+        BellColliderSolver::relaxTowardRingBoundary(result, ring, 1.0, 0, static_cast<int>(result.length()), true,
+                                                    std::vector<MVector>(result.length(), MVector(0, 0, 0)), {});
     if (smoothness > 0.0)
     {
         std::vector<MVector> displacement(base.length());
@@ -1267,7 +1416,8 @@ static MPointArray waistComposition(const MPointArray &base, const BellRowTopolo
         for (unsigned int i = 0; i < base.length(); ++i)
             result[i] = base[i] + displacement[i];
         for (const auto &ring : rings)
-            BellColliderSolver::relaxTowardRingBoundary(result, ring, 1.0, 0, static_cast<int>(result.length()), true);
+            BellColliderSolver::relaxTowardRingBoundary(result, ring, 1.0, 0, static_cast<int>(result.length()), true,
+                                                        referenceDirections(result, base), {});
     }
     return result;
 }
@@ -1286,7 +1436,9 @@ static bool waistRow()
     for (double smoothness : {0.0, 0.5})
     {
         auto expected = base;
-        referenceRelax(expected, rings[0], 1.0, 0, 8, true);
+        // Before smoothing every waist ring receives zero direction.
+        referenceDirectionalRelax(expected, rings[0], 1.0, 0, 8, true,
+                                   std::vector<MVector>(8, MVector(0, 0, 0)), {});
         if (smoothness > 0.0)
         {
             std::vector<MVector> displacement(8);
@@ -1295,13 +1447,13 @@ static bool waistRow()
             referenceSmooth(displacement, fixture, smoothness);
             for (int i = 0; i < 8; ++i)
                 expected[i] = base[i] + displacement[i];
-            referenceRelax(expected, rings[0], 1.0, 0, 8, true);
+            referenceDirectionalRelax(expected, rings[0], 1.0, 0, 8, true, referenceDirections(expected, base), {});
         }
         MPointArray baseline;
         for (double follow : {0.0, 1.0})
         {
             const auto actual = waistComposition(base, topology, rings, smoothness);
-            if (actual.length() != 8 || !compare(expected, actual, 0, 8) || !sameBits(actual[7].x, base[7].x))
+            if (actual.length() != 8 || !directionalCompare(expected, actual) || !sameBits(actual[7].x, base[7].x))
                 return false;
             if (follow == 0.0)
                 baseline = actual;
@@ -1481,8 +1633,10 @@ static bool contactGate()
         for (size_t r = 0; r < current.rings.size(); ++r)
         {
             auto expected = intruding;
-            referenceRelax(expected, current.rings[r], 1.0, 0, 8, false);
-            if (!compare(expected, actual[r], 0, 8) || unchanged(intruding[0], actual[r][0]))
+            // No-rotation rows use the cross-section quadratic with zero direction.
+            referenceDirectionalRelax(expected, current.rings[r], 1.0, 0, 8, false,
+                                       std::vector<MVector>(8, MVector(0, 0, 0)), {});
+            if (!directionalCompare(expected, actual[r]) || unchanged(intruding[0], actual[r][0]))
                 return false;
         }
     }
@@ -1572,9 +1726,11 @@ static bool relaxOutsideGate()
         inputs.capAtRingOrigin = cap;
         std::vector<MPointArray> actual;
         auto expected = source;
-        referenceRelax(expected, inputs.rings[0], 1.0, 0, static_cast<int>(source.length()), cap);
+        // The row path uses the quadratic even at the old radial fallback threshold.
+        referenceDirectionalRelax(expected, inputs.rings[0], 1.0, 0, static_cast<int>(source.length()), cap,
+                                   std::vector<MVector>(source.length(), MVector(0, 0, 0)), {});
         if (!BellColliderSolver::deformPoints(inputs, source, makeTopology(fixture), {{}}, actual) ||
-            !compare(expected, actual[0], 0, static_cast<int>(source.length())) || !runRowCase(inputs, source, fixture))
+            !directionalCompare(expected, actual[0]) || !runRowCase(inputs, source, fixture))
             return false;
     }
     MPointArray base;
@@ -1590,10 +1746,11 @@ static bool relaxOutsideGate()
     if (!(base[2].x < 1.0))
         return false;
     auto expected = base;
-    referenceRelax(expected, inputs.rings[0], 1.0, 0, 3, true);
+    referenceDirectionalRelax(expected, inputs.rings[0], 1.0, 0, 3, true,
+                               std::vector<MVector>(3, MVector(0, 0, 0)), {});
     std::vector<MPointArray> actual;
     return BellColliderSolver::deformPoints(inputs, base, makeTopology(small), {{}}, actual) &&
-           compare(expected, actual[0], 0, 3) && actual[0][2].x > base[2].x;
+           directionalCompare(expected, actual[0]) && actual[0][2].x > base[2].x;
 }
 
 static bool relaxLaneIndependence()
@@ -1860,6 +2017,906 @@ static bool invalidRowInputs()
            BellColliderSolver::deformPoints(inputs, shortBase, topology, {{0}}, points) == MS::kInvalidParameter;
 }
 
+static bool runDirectionalRowCase(const BellRowInputs &inputs, const MPointArray &base, const RowFixture &fixture)
+{
+    for (bool displaced : {false, true})
+    {
+        auto current = base;
+        if (displaced)
+            for (unsigned int i = 0; i < current.length(); ++i)
+                current[i] = MPoint(current[i].x + 0.125, current[i].y - 0.25, current[i].z + 0.375, current[i].w);
+        const auto expected = referenceRow(inputs, current, fixture);
+        BellRowOutputs actual;
+        if (!BellColliderSolver::solveRow(inputs, current, makeTopology(fixture), actual) ||
+            !directionalCompare(expected.points, actual.points) ||
+            !directionalVectors(expected.directDisplacements, actual.directDisplacements) ||
+            !directionalVectors(expected.directField.values, actual.directField.values))
+            return false;
+    }
+    return true;
+}
+
+static bool directionalRowOrder()
+{
+    auto fixture = chain(7);
+    fixture.cuts = {{2, 3}};
+    auto topology = makeTopology(fixture);
+    topology.vertices[2].outputDuplicates.push_back(topology.outputCount++);
+    MPointArray base, points;
+    for (int i = 0; i < 7; ++i)
+    {
+        base.append(MPoint(-2 + i * 0.1, 1, -0.5));
+        points.append(MPoint(-0.4 + i * 0.1, 1, 0.3));
+    }
+    BellRowInputs inputs;
+    MMatrix first, second;
+    first[0][0] = 2;
+    first[2][2] = 1.5;
+    second[3][0] = -0.6;
+    inputs.rings = {PreparedBellRing(first), PreparedBellRing(second)};
+    inputs.collision = 1;
+    inputs.smoothness = 0.1;
+    inputs.followGain = 0.2;
+    if (!runDirectionalRowCase(inputs, base, fixture))
+        return false;
+    auto reversedTopology = topology;
+    std::reverse(reversedTopology.vertices.begin(), reversedTopology.vertices.end());
+    for (auto &vertex : reversedTopology.vertices)
+    {
+        if (vertex.previous >= 0)
+            vertex.previous = 6 - vertex.previous;
+        if (vertex.next >= 0)
+            vertex.next = 6 - vertex.next;
+    }
+    MPointArray reversedBase, reversedPoints;
+    for (unsigned int i = base.length(); i > 0; --i)
+    {
+        reversedBase.append(base[i - 1]);
+        reversedPoints.append(points[i - 1]);
+    }
+    for (const auto &ring : inputs.rings)
+    {
+        const auto directions = referenceDirections(points, base);
+        auto reversedDirections = directions;
+        std::reverse(reversedDirections.begin(), reversedDirections.end());
+        if (!directionalVectors(reversedDirections, referenceDirections(reversedPoints, reversedBase)))
+            return false;
+        BellColliderSolver::relaxRowFaded(points, ring, 1, true, topology, {0.25, 0.75}, directions);
+        BellColliderSolver::relaxRowFaded(reversedPoints, ring, 1, true, reversedTopology, {0.25, 0.75},
+                                          reversedDirections);
+    }
+    MPointArray restored;
+    for (unsigned int i = reversedPoints.length(); i > 0; --i)
+        restored.append(reversedPoints[i - 1]);
+    if (!directionalCompare(points, restored))
+        return false;
+    BellRowOutputs forward, reversed;
+    if (!BellColliderSolver::solveRow(inputs, base, topology, forward) ||
+        !BellColliderSolver::solveRow(inputs, reversedBase, reversedTopology, reversed))
+        return false;
+    restored.clear();
+    std::reverse(reversed.directDisplacements.begin(), reversed.directDisplacements.end());
+    std::reverse(reversed.directField.values.begin(), reversed.directField.values.end());
+    for (unsigned int i = reversed.points.length(); i > 0; --i)
+        restored.append(reversed.points[i - 1]);
+    return directionalCompare(forward.points, restored) &&
+           directionalVectors(forward.directDisplacements, reversed.directDisplacements) &&
+           directionalVectors(forward.directField.values, reversed.directField.values);
+}
+
+static bool directionalPartialBlend()
+{
+    RowFixture fixture = chain(5);
+    fixture.cuts = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
+    auto topology = makeTopology(fixture);
+    topology.vertices[2].outputDuplicates.push_back(topology.outputCount++);
+    const std::vector<double> weights = {0, 0.25, 0.5, 0.75, 1};
+    const std::vector<double> fades = {1, 0.25, 0, 0.25, 1};
+    MPointArray base, points;
+    for (int i = 0; i < 5; ++i)
+    {
+        base.append(MPoint(-2, 1, 0.2));
+        points.append(MPoint(-0.2, 1, 0.3));
+    }
+    MMatrix matrix;
+    matrix[0][0] = matrix[2][2] = 2;
+    const PreparedBellRing ring(matrix);
+    const auto directions = referenceDirections(points, base);
+    auto after = points;
+    referenceDirectionalRelax(after, ring, 1, 0, 5, true, directions, fades);
+    auto expected = points;
+    for (int i = 0; i < 5; ++i)
+    {
+        const double m = weights[i];
+        const double f = m > 0 && m < 1 ? 1 - 4 * m * (1 - m) : 1;
+        if (f != fades[i])
+            return false;
+        expected[i] = MPoint(points[i].x * (1 - f) + after[i].x * f, points[i].y * (1 - f) + after[i].y * f,
+                             points[i].z * (1 - f) + after[i].z * f, after[i].w);
+    }
+    auto actual = points;
+    BellColliderSolver::relaxRowFaded(actual, ring, 1, true, topology, weights, directions);
+    if (!directionalCompare(expected, actual) || !sameBits(actual[2].x, points[2].x))
+        return false;
+    MPointArray expanded;
+    expanded.setLength(topology.outputCount);
+    for (size_t i = 0; i < topology.vertices.size(); ++i)
+        for (unsigned int cv : topology.vertices[i].outputDuplicates)
+            expanded[cv] = actual[static_cast<unsigned int>(i)];
+    if (!sameBits(expanded[2].x, expanded[topology.outputCount - 1].x) ||
+        topology.vertices[2].outputDuplicates.size() != 2)
+        return false;
+    for (bool mismatch : {false, true})
+    {
+        auto currentTopology = topology;
+        if (mismatch)
+            currentTopology.vertices.pop_back();
+        auto full = points, oracle = points;
+        referenceDirectionalRelax(oracle, ring, 1, 0, 5, true, directions, {});
+        BellColliderSolver::relaxRowFaded(full, ring, 1, true, currentTopology,
+                                          mismatch ? weights : std::vector<double>(), directions);
+        if (!directionalCompare(oracle, full))
+            return false;
+    }
+    auto still = points, stillExpected = points;
+    const std::vector<MVector> zero(5, MVector(0, 0, 0));
+    referenceDirectionalRelax(stillExpected, ring, 1, 0, 5, true, zero, {});
+    BellColliderSolver::relaxTowardRingBoundary(still, ring, 1, 0, 5, true, zero, {});
+    if (!directionalCompare(stillExpected, still))
+        return false;
+
+    const auto liftedFixture = chain(8, true);
+    BellRowInputs input;
+    input.collision = 1;
+    input.falloff = -1;
+    input.smoothness = 0.1;
+    input.followGain = 0.2;
+    input.contactBlendWidth = 0.125;
+    MTransformationMatrix transform;
+    transform.rotateBy(MQuaternion(MVector(0, 1, 0), MVector(0.6, 0.8, 0)), MSpace::kTransform);
+    input.rings.emplace_back(transform.asMatrix());
+    MPointArray liftedBase;
+    for (int i = 0; i < 8; ++i)
+    {
+        const double angle = i * 2 * std::acos(-1.0) / 8;
+        liftedBase.append(MPoint(0.8 * std::cos(angle), 1, 0.8 * std::sin(angle)));
+    }
+    if (!runDirectionalRowCase(input, liftedBase, liftedFixture))
+        return false;
+    auto cutFixture = chain(8);
+    cutFixture.u = {0, 0.125, 0.25, 0.375, 0.375, 0.5, 0.625, 0.75};
+    cutFixture.cuts = {{3, 4}};
+    auto cutTopology = makeTopology(cutFixture);
+    cutTopology.vertices[3].outputDuplicates.push_back(cutTopology.outputCount++);
+    MPointArray cutBase;
+    for (const MPoint point : {MPoint(2, 1, 0), MPoint(1.5, 1, 1.5), MPoint(0, 1, 2), MPoint(-1.5, 1, 1.5),
+                               MPoint(-1.5, 1, 1.5), MPoint(-2, 1, 0), MPoint(-1.5, 1, -1.5), MPoint(0, 1, -2)})
+        cutBase.append(point);
+    MTransformationMatrix cutTransform;
+    cutTransform.rotateBy(MQuaternion(MVector(0, 1, 0), MVector(0, std::cos(0.6), std::sin(0.6))), MSpace::kTransform);
+    input.rings = {PreparedBellRing(cutTransform.asMatrix())};
+    for (double m : {0.25, 0.5, 0.75, 1.0})
+    {
+        double low = 0, high = 1;
+        for (int iteration = 0; iteration < 60; ++iteration)
+        {
+            const double t = (low + high) * 0.5;
+            if (t * t * (3 - 2 * t) < m)
+                low = t;
+            else
+                high = t;
+        }
+        input.contactBlendWidth = m == 1 ? 0 : 0.125 / ((low + high) * 0.5);
+        std::vector<MPointArray> responses;
+        std::vector<std::vector<double>> componentWeights;
+        if (!BellColliderSolver::deformPoints(input, cutBase, cutTopology, {{2}}, responses, &componentWeights) ||
+            componentWeights.size() != 1 || componentWeights[0].size() != 2 ||
+            std::abs(componentWeights[0][0] - m) > 1e-12 || componentWeights[0][1] != 0)
+            return false;
+        const auto mask = referenceComponentWeights(input, input.rings[0], cutBase, cutFixture);
+        if (!directionalCompare(referenceDeform(input, input.rings[0], cutBase, mask), responses[0]) ||
+            !runDirectionalRowCase(input, cutBase, cutFixture))
+            return false;
+    }
+    return true;
+}
+
+static bool directionalSweep(bool activeSecond)
+{
+    const double R = 6.06, H = 58, epsilon = 0.1;
+    const double X = std::sqrt(R * R - epsilon * epsilon);
+    const MPoint B(0, H, -12);
+    MPoint previousP, previousOutput;
+    double previousAngle = 0, maximumRatio = 0, maximumAngle = 0;
+    const auto topology = makeTopology(chain(1));
+    const int first = activeSecond ? 4 : -10;
+    for (int degrees = first; degrees <= 10; ++degrees)
+    {
+        const double theta = degrees * std::acos(-1.0) / 180;
+        const double cosine = std::cos(theta), sine = std::sin(theta);
+        const auto rotate = [&](double x, double y, double z) {
+            return MPoint(x * cosine - y * sine, x * sine + y * cosine, z);
+        };
+        MMatrix matrix;
+        matrix[0][0] = R * cosine;
+        matrix[0][1] = R * sine;
+        matrix[1][0] = -sine;
+        matrix[1][1] = cosine;
+        matrix[2][2] = R;
+        const PreparedBellRing ring1(matrix);
+        const auto origin = rotate(activeSecond ? -X - 0.5 * R : -2 * X, 0, 0);
+        matrix[3][0] = origin.x;
+        matrix[3][1] = origin.y;
+        const PreparedBellRing ring3(matrix);
+        const auto A = rotate(X, H, epsilon), E = rotate(-X, H, epsilon);
+        const MVector da = A - B, de = E - B;
+        const double wa = da * da / (da * da + de * de);
+        const MPoint P(wa * A.x + (1 - wa) * E.x, wa * A.y + (1 - wa) * E.y, wa * A.z + (1 - wa) * E.z);
+        MPointArray base, actual;
+        base.append(B);
+        actual.append(P);
+        auto expected = actual;
+        const auto initialDirections = referenceDirections(actual, base);
+        referenceDirectionalRelax(expected, ring1, 1, 0, 1, true, initialDirections, {});
+        BellColliderSolver::relaxRowFaded(actual, ring1, 1, true, topology, {1}, initialDirections);
+        if (!directionalCompare(expected, actual))
+            return false;
+        const MPoint firstOutput = actual[0];
+        const MVector q = firstOutput - P;
+        const double angle = std::atan2(q.z, q.x * cosine + q.y * sine);
+        auto stale = actual;
+        BellColliderSolver::relaxRowFaded(stale, ring3, 1, true, topology, {1}, initialDirections);
+        referenceDirectionalRelax(expected, ring3, 1, 0, 1, true, referenceDirections(expected, base), {});
+        BellColliderSolver::relaxRowFaded(actual, ring3, 1, true, topology, {1}, referenceDirections(actual, base));
+        if (!directionalCompare(expected, actual))
+            return false;
+        if (activeSecond && (!((actual[0] - firstOutput).length() > 1e-3) || !((actual[0] - stale[0]).length() > 1e-6)))
+            return false;
+        if (!activeSecond && degrees != first)
+        {
+            const double ratio = (actual[0] - previousOutput).length() / (P - previousP).length();
+            const double delta =
+                std::abs(std::atan2(std::sin(angle - previousAngle), std::cos(angle - previousAngle))) * 180 /
+                std::acos(-1.0);
+            maximumRatio = (std::max)(maximumRatio, ratio);
+            maximumAngle = (std::max)(maximumAngle, delta);
+            if (!(ratio <= 2 && delta <= 30))
+                return false;
+        }
+        previousP = P;
+        previousOutput = actual[0];
+        previousAngle = angle;
+    }
+    if (!activeSecond)
+        std::cout << "directional sweep maximum ratio " << maximumRatio << " angle " << maximumAngle << "\n";
+    return true;
+}
+
+static bool directionalTwoRingSweep()
+{
+    return directionalSweep(false);
+}
+static bool directionalTwoRingSweepActiveSecond()
+{
+    return directionalSweep(true);
+}
+
+static bool runDirectionalCases()
+{
+    struct DirectionalCase
+    {
+        const char *name;
+        bool (*run)();
+    };
+    const DirectionalCase directionalCases[] = {
+        {"directionalRowOrder", directionalRowOrder},
+        {"directionalPartialBlend", directionalPartialBlend},
+        {"directionalTwoRingSweep", directionalTwoRingSweep},
+        {"directionalTwoRingSweepActiveSecond", directionalTwoRingSweepActiveSecond}};
+    bool success = true;
+    for (const auto &test : directionalCases)
+    {
+        const bool passed = test.run();
+        std::cout << (passed ? "PASS " : "FAIL ") << test.name << "\n";
+        success = passed && success;
+    }
+    return success;
+}
+
+static MVector mergeAtOrigin(const std::vector<MVector> &displacements)
+{
+    MPointArray base;
+    base.append(MPoint(0, 0, 0));
+    std::vector<MPointArray> rings;
+    for (const auto &displacement : displacements)
+    {
+        MPointArray points;
+        points.append(base[0] + displacement);
+        rings.push_back(points);
+    }
+    return BellColliderSolver::mergeDisplacement(base, rings, 0);
+}
+
+static bool mergeClose(const MVector &actual, const MVector &expected, double tolerance = 1e-12)
+{
+    return std::isfinite(actual.x) && std::isfinite(actual.y) && std::isfinite(actual.z) &&
+           (actual - expected).length() <= tolerance;
+}
+
+// Independent statement of the merge rule: squared-length weighted mean scaled by max|d| / (sum|d|^3 / sum|d|^2).
+static MVector mergeClosedForm(const std::vector<MVector> &displacements)
+{
+    double total = 0.0, cubic = 0.0, longest = 0.0;
+    MVector numerator(0, 0, 0);
+    for (const auto &d : displacements)
+    {
+        const double length = d.length();
+        total += length * length;
+        cubic += length * length * length;
+        longest = (std::max)(longest, length);
+        numerator += d * (length * length);
+    }
+    return total > 0.0 ? numerator * (longest / cubic) : MVector(0, 0, 0);
+}
+
+static bool mergeExpectations()
+{
+    const MVector x(1, 0, 0), z(0, 0, 0);
+    struct Example
+    {
+        std::vector<MVector> inputs;
+        MVector expected;
+    };
+    const Example examples[] = {
+        {{x, x}, x}, {{x, x * 0.5}, x}, {{x, x * -0.5}, x * (7.0 / 9.0)},
+        {{x, -x}, z}, {{MVector(1, 2, 3)}, MVector(1, 2, 3)},
+        {{z, z}, z}, {{z, x}, x}, {{x, -x, x * 2}, x * 1.6},
+        {{x * 2, x}, x * 2}, {{x * 0.5, x * -0.25}, x * (7.0 / 18.0)},
+        {{}, z}, {{x * 0.5e-5}, x * 0.5e-5}, {{x * 1e-5}, x * 1e-5}};
+    for (const auto &example : examples)
+        if (!mergeClose(mergeAtOrigin(example.inputs), example.expected))
+            return false;
+    const MVector single(1, 2, 3);
+    return mergeClose(mergeAtOrigin({single}), single.normal() * single.length(),
+                      1e-12 * (std::max)(1.0, single.length()));
+}
+
+static double cancellationAmplitude(double t)
+{
+    return 2.0 * (1.0 - 3.0 * t * t + 2.0 * t * t * t);
+}
+
+static double cancellationClosedForm(double amplitude)
+{
+    const double cube = amplitude * amplitude * amplitude;
+    return (cube - 1.0) / (cube + 1.0) * (std::max)(amplitude, 1.0);
+}
+
+static bool mergeCancellation()
+{
+    const auto evaluate = [](double amplitude) {
+        return mergeAtOrigin({MVector(amplitude, 0, 0), MVector(-1, 0, 0)});
+    };
+    for (double t : {0.4999, 0.5, 0.5001})
+    {
+        const double a = cancellationAmplitude(t);
+        if (!mergeClose(evaluate(a), MVector(cancellationClosedForm(a), 0, 0), 1e-9))
+            return false;
+    }
+    double previous = 0.0;
+    double h = 0.001;
+    for (int i = 0; i < 12; ++i, h *= 0.5)
+    {
+        const double a = cancellationAmplitude(0.5 + h);
+        const double b = cancellationAmplitude(0.5 - h);
+        const MVector right = evaluate(a), left = evaluate(b);
+        if (!mergeClose(right, MVector(cancellationClosedForm(a), 0, 0), 1e-9) ||
+            !mergeClose(left, MVector(cancellationClosedForm(b), 0, 0), 1e-9))
+            return false;
+        const double difference = (right - left).length();
+        if (!(difference > 0.0) || (i > 0 && std::abs(difference / previous / 0.5 - 1.0) > 0.05))
+            return false;
+        previous = difference;
+    }
+    for (double epsilon : {-0.00001, -0.000005, 0.000005, 0.00001})
+    {
+        const double a = 1.0 + epsilon;
+        const MVector actual = evaluate(a);
+        if (actual.x == 0.0 || !mergeClose(actual, MVector(cancellationClosedForm(a), 0, 0), 1e-9))
+            return false;
+    }
+    return true;
+}
+
+static bool mergeScalingRotationBound()
+{
+    const std::vector<MVector> original = {MVector(1, 2, 3), MVector(-2, 1, -1), MVector(0.5, -1, 2)};
+    const MVector mean = (original[0] * 14.0 + original[1] * 6.0 + original[2] * 5.25) / 25.25;
+    const double average = (14.0 * std::sqrt(14.0) + 6.0 * std::sqrt(6.0) + 5.25 * std::sqrt(5.25)) / 25.25;
+    const MVector expected = mean * (std::sqrt(14.0) / average);
+    if (!mergeClose(mergeClosedForm(original), expected, 1e-12))
+        return false;
+    double scale = 1.0;
+    for (int i = 0; i < 32; ++i, scale *= 0.5)
+    {
+        std::vector<MVector> scaled, rotated;
+        double maximum = 0.0;
+        for (const auto &d : original)
+        {
+            scaled.push_back(d * scale);
+            rotated.push_back(MVector(-d.y, d.x, d.z) * scale);
+            maximum = (std::max)(maximum, d.length() * scale);
+        }
+        const MVector actual = mergeAtOrigin(scaled);
+        if (!mergeClose(actual, expected * scale, 1e-12 * scale) ||
+            !mergeClose(mergeAtOrigin(rotated), MVector(-expected.y, expected.x, expected.z) * scale,
+                        1e-12 * scale) || actual.length() > maximum + 1e-12 * scale)
+            return false;
+    }
+    for (double a : {-2.0, -1.0, 0.0, 0.5, 1.0, 2.0})
+        for (double b : {-2.0, -1.0, 0.0, 0.5, 1.0, 2.0})
+        {
+            const MVector first(a, b, 0), second(-b, 0, a), third(0, -a, b);
+            const double maximum = (std::max)(first.length(), (std::max)(second.length(), third.length()));
+            if (mergeAtOrigin({first, second, third}).length() > maximum + 1e-12)
+                return false;
+        }
+    return true;
+}
+
+static MMatrix parallelMergeRing(double radius, double centerX)
+{
+    MMatrix matrix;
+    matrix[0][0] = radius;
+    matrix[2][2] = radius;
+    matrix[3][0] = centerX;
+    return matrix;
+}
+
+static MVector radialMergeDisplacement(const MPoint &point, double radius, double centerX, double collision)
+{
+    const MVector radial(point.x - centerX, 0, point.z);
+    const double distance = radial.length();
+    return distance < radius ? radial * (collision * (radius - distance) / distance) : MVector(0, 0, 0);
+}
+
+static bool bellSolveMerge()
+{
+    BellColliderInputs inputs;
+    inputs.bellSubdivision = 16;
+    const MPointArray base = BellColliderSolver::makeBellPoints(inputs.bellMatrix, 1, inputs.bellSubdivision);
+    const unsigned int start = inputs.bellSubdivision + 1;
+    const Plane plane(MPoint(0, 0, 0), MVector(0, 1, 0));
+    for (double collision : {1.0, 0.5})
+        for (bool offset : {false, true})
+        {
+            inputs.collision = static_cast<float>(collision);
+            const double radii[] = {2.0, offset ? 2.0 : 1.5};
+            const double centers[] = {0.0, offset ? 2.0 : 0.0};
+            std::vector<BellColliderOutputs> singles(2);
+            for (int r = 0; r < 2; ++r)
+            {
+                inputs.rings.clear();
+                inputs.rings.emplace_back(parallelMergeRing(radii[r], centers[r]));
+                MPoint bellHit, ringHit, lineHit;
+                if (BellColliderSolver::collisionPoints(inputs.bellMatrix, inputs.bellMatrix.inverse(), plane,
+                                                        inputs.rings[0], bellHit, ringHit, lineHit) ||
+                    !BellColliderSolver::solve(inputs, base, singles[r]))
+                    return false;
+                for (unsigned int i = 0; i < base.length(); ++i)
+                {
+                    const MVector expected = i < start ? MVector(0, 0, 0) :
+                        radialMergeDisplacement(base[i], radii[r], centers[r], collision);
+                    if (!mergeClose(singles[r].points[i] - base[i], expected) ||
+                        (i < start && (!sameBits(singles[r].points[i].x, base[i].x) ||
+                                       !sameBits(singles[r].points[i].y, base[i].y) ||
+                                       !sameBits(singles[r].points[i].z, base[i].z))) ||
+                        !sameBits(singles[r].points[i].w, base[i].w))
+                        return false;
+                }
+                if (!zero(singles[r].meanDisplacement))
+                    return false;
+            }
+            inputs.rings.clear();
+            for (int r = 0; r < 2; ++r)
+                inputs.rings.emplace_back(parallelMergeRing(radii[r], centers[r]));
+            BellColliderOutputs actual;
+            if (!BellColliderSolver::solve(inputs, base, actual) || !zero(actual.meanDisplacement))
+                return false;
+            for (unsigned int i = 0; i < base.length(); ++i)
+            {
+                std::vector<MVector> analytic, fromSingle;
+                if (i >= start)
+                    for (int r = 0; r < 2; ++r)
+                    {
+                        analytic.push_back(radialMergeDisplacement(base[i], radii[r], centers[r], collision));
+                        fromSingle.push_back(singles[r].points[i] - base[i]);
+                    }
+                const MVector expected = mergeClosedForm(analytic);
+                const MVector fromSingles = mergeClosedForm(fromSingle);
+                if (!mergeClose(actual.points[i] - base[i], expected) ||
+                    !mergeClose(actual.points[i] - base[i], fromSingles) ||
+                    !sameBits(actual.points[i].w, base[i].w))
+                    return false;
+                if (i < start && (!sameBits(actual.points[i].x, base[i].x) ||
+                                  !sameBits(actual.points[i].y, base[i].y) ||
+                                  !sameBits(actual.points[i].z, base[i].z)))
+                    return false;
+            }
+            // Same centre: parallel pushes keep the larger length. Offset: the pushes cancel exactly.
+            if (!mergeClose(actual.points[start] - base[start], MVector(offset ? 0.0 : collision, 0, 0)))
+                return false;
+        }
+    return true;
+}
+
+// Regression oracle for the gate path (smoothness and followGain positive), recorded from the accepted
+// build with the bellSolveGateBits inputs. Rows contain point x/y/z/w in output order, followed by
+// meanDisplacement x/y/z/0. On mismatch the test prints the actual rows in the same layout.
+static const std::vector<std::array<double, 4>> bellGateExpected = {
+    {0, 0, 0, 1},
+    {1, 0, 0, 1},
+    {6.123233995736766e-17, 0, 1, 1},
+    {-1, 0, 1.2246467991473532e-16, 1},
+    {-1.8369701987210297e-16, 0, -1, 1},
+    {1.946616841943523, 1, 2.3606207941720405e-18, 1},
+    {0.054056402839586126, 1, 1.6045772431830492, 1},
+    {-1.5940710036129544, 1, 2.0081366929062648e-16, 1},
+    {0.054056402839585731, 1, -1.6045772431830492, 1},
+    {0.06410264417328905, 0, 1.3080123850768456e-17, 0.0},
+};
+
+static bool bellSolveGateBits()
+{
+    BellColliderInputs inputs;
+    inputs.bellSubdivision = 4;
+    inputs.collision = 0.5f;
+    inputs.smoothness = 0.5;
+    inputs.followGain = 0.25;
+    inputs.rings.emplace_back(parallelMergeRing(2.0, 0.0));
+    inputs.rings.emplace_back(parallelMergeRing(1.5, 0.75));
+    const MPointArray base = BellColliderSolver::makeBellPoints(inputs.bellMatrix, 1, inputs.bellSubdivision);
+    BellColliderOutputs actual;
+    if (!BellColliderSolver::solve(inputs, base, actual) || bellGateExpected.size() != actual.points.length() + 1)
+        return false;
+    bool matched = true;
+    for (unsigned int i = 0; i < actual.points.length(); ++i)
+    {
+        const auto &expected = bellGateExpected[i];
+        const MPoint &point = actual.points[i];
+        if (!sameBits(point.x, expected[0]) || !sameBits(point.y, expected[1]) ||
+            !sameBits(point.z, expected[2]) || !sameBits(point.w, expected[3]))
+            matched = false;
+    }
+    const auto &mean = bellGateExpected.back();
+    if (!sameBits(actual.meanDisplacement.x, mean[0]) || !sameBits(actual.meanDisplacement.y, mean[1]) ||
+        !sameBits(actual.meanDisplacement.z, mean[2]))
+        matched = false;
+    if (!matched)
+    {
+        std::cout << std::setprecision(17);
+        for (unsigned int i = 0; i < actual.points.length(); ++i)
+            std::cout << "    {" << actual.points[i].x << ", " << actual.points[i].y << ", " << actual.points[i].z
+                      << ", " << actual.points[i].w << "},\n";
+        std::cout << "    {" << actual.meanDisplacement.x << ", " << actual.meanDisplacement.y << ", "
+                  << actual.meanDisplacement.z << ", 0.0},\n";
+    }
+    return matched;
+}
+
+static bool kneeEndRowPreparation()
+{
+    const SkirtLegProfile profile(1.2, 1.4, 1.5, 2, 0.8, 0.9, 0.5, 0.6, 0.5, 0.5, 4, 6);
+    for (double scaleY : {0.75, 1.5})
+        for (auto kind : {SkirtLegProfile::Ring::Knee, SkirtLegProfile::Ring::Extended, SkirtLegProfile::Ring::Heel})
+        {
+            const auto radius = profile.forRing(0.7, kind, scaleY);
+            const double L = (kind == SkirtLegProfile::Ring::Knee ? 4.0 : 10.0) * scaleY;
+            MMatrix matrix;
+            matrix[0][0] = radius.x;
+            matrix[1][1] = L;
+            matrix[2][2] = 2 * radius.z;
+            PreparedBellRing ring(matrix);
+            const bool distal = kind == SkirtLegProfile::Ring::Knee || kind == SkirtLegProfile::Ring::Extended;
+            BellColliderSolver::prepareDistalEnd(ring, matrix, distal);
+            const double a = MVector(matrix[0][0], matrix[0][1], matrix[0][2]).length();
+            const double b = MVector(matrix[2][0], matrix[2][1], matrix[2][2]).length();
+            const double expectedWidth = (std::min)(L, (std::max)(a, b));
+            if (ring.distalEnd != distal || ring.distalLength != L || ring.distalWidth != expectedWidth)
+                return false;
+            MPointArray source;
+            for (double distance : {-1.0, L * 0.5, L, L + ring.distalWidth * 0.5,
+                                    L + ring.distalWidth, L + ring.distalWidth + 1, L + 2 * ring.distalWidth, 1.0})
+                source.append(MPoint(0.2, distance, -0.0));
+            const MVector offset = source[4] - ring.plane.orig;
+            const MVector normal = ring.plane.normal;
+            const double measured = (offset.x * normal.x + offset.y * normal.y) + offset.z * normal.z;
+            if (measured != L + expectedWidth)
+                return false;
+            const std::vector<MVector> directions(source.length(), MVector(4, 0, 0));
+            auto actual = source, expected = source;
+            referenceDirectionalRelax(expected, ring, 0.65, 1, 6, true, directions, {});
+            BellColliderSolver::relaxTowardRingBoundary(actual, ring, 0.65, 1, 6, true, directions, {});
+            if (!directionalCompare(expected, actual))
+                return false;
+            for (unsigned int i : {0u, 7u})
+                if (!sameBits(source[i].x, actual[i].x) || !sameBits(source[i].y, actual[i].y) ||
+                    !sameBits(source[i].z, actual[i].z))
+                    return false;
+            if (distal)
+                for (unsigned int i : {4u, 5u, 6u})
+                    if (!sameBits(source[i].x, actual[i].x) || !sameBits(source[i].y, actual[i].y) ||
+                        !sameBits(source[i].z, actual[i].z))
+                        return false;
+        }
+    for (double L : {10.0, 4.0})
+    {
+        MMatrix matrix;
+        matrix[0][0] = 5;
+        matrix[1][1] = L;
+        matrix[2][2] = 3;
+        PreparedBellRing prepared(matrix);
+        BellColliderSolver::prepareDistalEnd(prepared, matrix, true);
+        const double a = MVector(matrix[0][0], matrix[0][1], matrix[0][2]).length();
+        const double b = MVector(matrix[2][0], matrix[2][1], matrix[2][2]).length();
+        const double width = (std::min)(L, (std::max)(a, b));
+        if (!prepared.distalEnd || prepared.distalLength != L || prepared.distalWidth != width)
+            return false;
+        MPointArray source;
+        for (double distance : {L, L + width * 0.5, L + width, L + width + 1})
+            source.append(MPoint(1, distance, -0.0));
+        const MVector offset = source[2] - prepared.plane.orig;
+        const MVector normal = prepared.plane.normal;
+        const double measured = (offset.x * normal.x + offset.y * normal.y) + offset.z * normal.z;
+        if (measured != L + width)
+            return false;
+        const double t = (measured - L) / width;
+        const double gain = 1 - ((t * t) * (3 - 2 * t));
+        if (t != 1 || gain != 0)
+            return false;
+        const auto topology = makeTopology(chain(4));
+        const std::vector<MVector> directions(source.length(), MVector(4, 0, 0));
+        auto actual = source, expected = source;
+        referenceDirectionalRelax(expected, prepared, 0.65, 0, 4, true, directions, {});
+        BellColliderSolver::relaxRowFaded(actual, prepared, 0.65, true, topology,
+                                         std::vector<double>(topology.components.size(), 1.0), directions);
+        if (!directionalCompare(expected, actual))
+            return false;
+        for (unsigned int i : {2u, 3u})
+            if (!sameBits(actual[i].x, source[i].x) || !sameBits(actual[i].y, source[i].y) ||
+                !sameBits(actual[i].z, source[i].z) || !sameBits(actual[i].w, source[i].w))
+                return false;
+    }
+
+    MMatrix wide;
+    wide[0][0] = 3;
+    wide[1][1] = 2;
+    wide[2][2] = 5;
+    PreparedBellRing ring(wide);
+    BellColliderSolver::prepareDistalEnd(ring, wide, true);
+    if (!ring.distalEnd || ring.distalWidth != 2)
+        return false;
+    for (double nonfinite : {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        ring.direction = MVector(nonfinite, 0, 0);
+        BellColliderSolver::prepareDistalEnd(ring, wide, true);
+        if (ring.distalEnd || std::isfinite(ring.distalLength))
+            return false;
+    }
+    return true;
+}
+
+static bool extended_keeps_leg_length_support()
+{
+    MMatrix kneeMatrix;
+    kneeMatrix[0][0] = kneeMatrix[2][2] = 2;
+    kneeMatrix[1][1] = 2;
+    MMatrix extendedMatrix = kneeMatrix;
+    extendedMatrix[1][1] = 8;
+    PreparedBellRing knee(kneeMatrix), extended(extendedMatrix);
+    BellColliderSolver::prepareDistalEnd(knee, kneeMatrix, true);
+    BellColliderSolver::prepareDistalEnd(extended, extendedMatrix, true);
+    PreparedBellRing previous = extended;
+    previous.distalEnd = false;
+    const std::vector<MVector> direction(1, MVector(4, 0, 0));
+    for (double distance : {5.0, 8.0, 9.0, 10.0, 11.0})
+    {
+        MPointArray source;
+        source.append(MPoint(-0.25, distance, -0.0));
+        const double measured = (source[0] - knee.translation) * knee.normal;
+        if (!(measured > knee.distalLength + knee.distalWidth))
+            return false;
+        auto kneeOut = source, extendedOut = source, oldOut = source, expected = source;
+        BellColliderSolver::relaxTowardRingBoundary(kneeOut, knee, 0.65, 0, 1, true, direction, {});
+        BellColliderSolver::relaxTowardRingBoundary(extendedOut, extended, 0.65, 0, 1, true, direction, {});
+        BellColliderSolver::relaxTowardRingBoundary(oldOut, previous, 0.65, 0, 1, true, direction, {});
+        referenceDirectionalRelax(expected, extended, 0.65, 0, 1, true, direction, {});
+        if (!compare(source, kneeOut, 0, 1) || !directionalCompare(expected, extendedOut))
+            return false;
+        if (distance <= extended.distalLength)
+        {
+            if (!compare(oldOut, extendedOut, 0, 1) || !((extendedOut[0] - source[0]).length() > 0))
+                return false;
+        }
+        const double gain = distance <= 8 ? 1 : (distance >= 10 ? 0 : 0.5);
+        const double correction = ((2.25 * 0.5) * 0.65) * gain;
+        if (std::abs(extendedOut[0].x - (source[0].x + correction)) > 1e-12)
+            return false;
+        if (distance > 10 && !compare(source, extendedOut, 0, 1))
+            return false;
+    }
+
+    const auto fixture = chain(5);
+    const auto topology = makeTopology(fixture);
+    for (double distance : {5.0, 9.0, 11.0})
+    {
+        MPointArray base;
+        for (int i = 0; i < 5; ++i)
+            base.append(MPoint(-0.25 + 0.1 * i, distance, 0.1));
+        for (double smoothness : {0.0, 0.1})
+            for (double follow : {0.0, 0.2})
+            {
+                BellRowInputs inputs;
+                inputs.rings = {knee, extended};
+                inputs.collision = 0.65f;
+                inputs.capAtRingOrigin = true;
+                inputs.smoothness = smoothness;
+                inputs.followGain = follow;
+                if (!runDirectionalRowCase(inputs, base, fixture))
+                    return false;
+                auto expected = referenceRow(inputs, base, fixture);
+                BellRowOutputs actual;
+                if (!BellColliderSolver::solveRow(inputs, base, topology, actual))
+                    return false;
+                for (unsigned int i = 0; i < base.length(); ++i)
+                {
+                    expected.points[i] += expected.directField.values[i] * 0.2;
+                    actual.points[i] += actual.directField.values[i] * 0.2;
+                }
+                for (size_t r = 0; r < inputs.rings.size(); ++r)
+                {
+                    const double collision = r == 0 ? 1.0 : 0.4;
+                    referenceDirectionalRelax(expected.points, inputs.rings[r], collision, 0, 5, true,
+                                               referenceDirections(expected.points, base), {});
+                    BellColliderSolver::relaxRowFaded(actual.points, inputs.rings[r], collision, true, topology,
+                                                      actual.componentWeights[r],
+                                                      referenceDirections(actual.points, base));
+                    if (!directionalCompare(expected.points, actual.points))
+                        return false;
+                }
+            }
+        for (double smoothness : {0.0, 0.5})
+        {
+            const std::vector<PreparedBellRing> rings = {knee, extended};
+            auto expected = base;
+            for (const auto &ring : rings)
+                referenceDirectionalRelax(expected, ring, 1, 0, 5, true,
+                                           std::vector<MVector>(5, MVector(0, 0, 0)), {});
+            if (smoothness > 0)
+            {
+                std::vector<MVector> displacements(5);
+                for (unsigned int i = 0; i < 5; ++i)
+                    displacements[i] = expected[i] - base[i];
+                referenceSmooth(displacements, fixture, smoothness);
+                for (unsigned int i = 0; i < 5; ++i)
+                    expected[i] = base[i] + displacements[i];
+                for (const auto &ring : rings)
+                    referenceDirectionalRelax(expected, ring, 1, 0, 5, true, referenceDirections(expected, base), {});
+            }
+            if (!directionalCompare(expected, waistComposition(base, topology, rings, smoothness)))
+                return false;
+        }
+    }
+
+    auto partialFixture = chain(5);
+    partialFixture.cuts = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
+    const auto partialTopology = makeTopology(partialFixture);
+    const std::vector<double> weights = {0, 0.25, 0.5, 0.75, 1};
+    const std::vector<double> fades = {1, 0.25, 0, 0.25, 1};
+    for (double collision : {1.0, 0.4})
+    {
+        MPointArray base, expected;
+        for (int i = 0; i < 5; ++i)
+        {
+            base.append(MPoint(-2, 9, 0.2));
+            expected.append(MPoint(-0.2, 9, 0.3));
+        }
+        auto actual = expected;
+        for (const auto &ring : {knee, extended})
+        {
+            const auto before = expected;
+            auto after = before;
+            referenceDirectionalRelax(after, ring, collision, 0, 5, true, referenceDirections(before, base), fades);
+            for (unsigned int i = 0; i < 5; ++i)
+            {
+                const double f = fades[i];
+                expected[i] = MPoint(before[i].x * (1 - f) + after[i].x * f,
+                                     before[i].y * (1 - f) + after[i].y * f,
+                                     before[i].z * (1 - f) + after[i].z * f, after[i].w);
+            }
+            BellColliderSolver::relaxRowFaded(actual, ring, collision, true, partialTopology, weights,
+                                              referenceDirections(actual, base));
+            if (!directionalCompare(expected, actual))
+                return false;
+        }
+    }
+
+    auto cutFixture = chain(8);
+    cutFixture.u = {0, 0.125, 0.25, 0.375, 0.375, 0.5, 0.625, 0.75};
+    cutFixture.cuts = {{3, 4}};
+    const auto cutTopology = makeTopology(cutFixture);
+    MPointArray cutBase;
+    for (const MPoint point : {MPoint(2, 1.25, 0), MPoint(1.5, 1.25, 1.5), MPoint(0, 1.25, 2), MPoint(-1.5, 1.25, 1.5),
+                               MPoint(-1.5, 1.25, 1.5), MPoint(-2, 1.25, 0), MPoint(-1.5, 1.25, -1.5), MPoint(0, 1.25, -2)})
+        cutBase.append(point);
+    MTransformationMatrix transform;
+    transform.rotateBy(MQuaternion(MVector(0, 1, 0), MVector(0, std::cos(0.6), std::sin(0.6))), MSpace::kTransform);
+    for (double length : {0.5, 1.5})
+    {
+        MMatrix matrix = transform.asMatrix();
+        for (int column = 0; column < 3; ++column)
+            matrix[1][column] *= length;
+        PreparedBellRing ring(matrix);
+        BellColliderSolver::prepareDistalEnd(ring, matrix, true);
+        BellRowInputs input;
+        input.rings = {ring};
+        input.collision = 1;
+        input.capAtRingOrigin = true;
+        input.falloff = -1;
+        input.smoothness = 0.1;
+        input.followGain = 0.2;
+        for (double m : {0.25, 0.5, 0.75, 1.0})
+        {
+            double low = 0, high = 1;
+            for (int iteration = 0; iteration < 60; ++iteration)
+            {
+                const double t = (low + high) * 0.5;
+                if (t * t * (3 - 2 * t) < m)
+                    low = t;
+                else
+                    high = t;
+            }
+            input.contactBlendWidth = m == 1 ? 0 : 0.125 / ((low + high) * 0.5);
+            std::vector<MPointArray> responses;
+            std::vector<std::vector<double>> componentWeights;
+            if (!BellColliderSolver::deformPoints(input, cutBase, cutTopology, {{2}}, responses, &componentWeights) ||
+                responses.size() != 1 || componentWeights.size() != 1 || componentWeights[0].size() != 2 ||
+                std::abs(componentWeights[0][0] - m) > 1e-12 || componentWeights[0][1] != 0)
+                return false;
+            const auto mask = referenceComponentWeights(input, ring, cutBase, cutFixture);
+            if (!directionalCompare(referenceDeform(input, ring, cutBase, mask), responses[0]) ||
+                !runDirectionalRowCase(input, cutBase, cutFixture))
+                return false;
+            auto rotationOnly = input;
+            rotationOnly.collision = 0;
+            std::vector<MPointArray> lifted;
+            if (!BellColliderSolver::deformPoints(rotationOnly, cutBase, cutTopology, {{2}}, lifted))
+                return false;
+            double motion = 0;
+            for (unsigned int i = 0; i < cutBase.length(); ++i)
+                motion += (lifted[0][i] - cutBase[i]).length();
+            if (!(motion > 1e-6))
+                return false;
+            auto still = cutBase;
+            referenceDirectionalRelax(still, ring, 1, 0, 8, true,
+                                       std::vector<MVector>(8, MVector(0, 0, 0)), {});
+            if (length > 1)
+            {
+                const double distance = (cutBase[2] - ring.translation) * ring.normal;
+                if (!(distance > ring.distalLength && distance < ring.distalLength + ring.distalWidth) ||
+                    !((still[2] - cutBase[2]).length() > 1e-6))
+                    return false;
+            }
+            std::vector<MPointArray> noRotation;
+            if (!BellColliderSolver::deformPoints(input, cutBase, cutTopology, {{}}, noRotation) ||
+                !directionalCompare(still, noRotation[0]) ||
+                !directionalCompare(referenceDeform(input, ring, cutBase, std::vector<double>(8, 0)), noRotation[0]))
+                return false;
+        }
+    }
+    return true;
+}
+
 int main()
 {
     struct Case
@@ -1867,7 +2924,14 @@ int main()
         const char *name;
         bool (*run)();
     };
-    const Case cases[] = {{"1 smoothing_cut_edge", smoothingCutEdge},
+    const Case cases[] = {{"knee_end_row_preparation", kneeEndRowPreparation},
+                          {"extended_keeps_leg_length_support", extended_keeps_leg_length_support},
+                          {"merge_expectations", mergeExpectations},
+                          {"merge_cancellation", mergeCancellation},
+                          {"merge_scaling_rotation_bound", mergeScalingRotationBound},
+                          {"bell_solve_merge", bellSolveMerge},
+                          {"bell_solve_gate_bits", bellSolveGateBits},
+                          {"1 smoothing_cut_edge", smoothingCutEdge},
                           {"2 smoothing_components", smoothingComponents},
                           {"3 local_follow", localFollow},
                           {"3 follow_summation_order", followSummationOrder},
@@ -1882,9 +2946,14 @@ int main()
                           {"9 contact_blend_continuity", contactBlendContinuity},
                           {"10 relax_outside_gate", relaxOutsideGate},
                           {"11 relax_lane_independence", relaxLaneIndependence}};
-    bool success = true;
+    bool success = runDirectionalCases();
     for (const auto &test : cases)
     {
+        if (test.run == bellSolveGateBits && bellGateExpected.empty())
+        {
+            std::cout << "SKIP " << test.name << ": pre-change binary baseline table is empty\n";
+            continue;
+        }
         const bool passed = test.run();
         std::cout << (passed ? "PASS " : "FAIL ") << test.name << "\n";
         success = passed && success;

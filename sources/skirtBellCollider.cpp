@@ -1820,7 +1820,10 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
                 matrix[0][c] *= radius.x;
                 matrix[2][c] *= radius.z;
             }
-            return PreparedBellRing(matrix);
+            PreparedBellRing ring(matrix);
+            BellColliderSolver::prepareDistalEnd(
+                ring, matrix, kind == SkirtLegProfile::Ring::Knee || kind == SkirtLegProfile::Ring::Extended);
+            return ring;
         };
         row.normalRings.push_back(prepare(ringFrames.leftKnee, SkirtLegProfile::Ring::Knee));
         row.normalRings.push_back(prepare(ringFrames.rightKnee, SkirtLegProfile::Ring::Knee));
@@ -1857,7 +1860,8 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
         {
             const int count = static_cast<int>(row.points.length());
             for (const auto &ring : normalRings)
-                BellColliderSolver::relaxTowardRingBoundary(row.points, ring, 1.0, 0, count, true);
+                BellColliderSolver::relaxTowardRingBoundary(
+                    row.points, ring, 1.0, 0, count, true, std::vector<MVector>(count, MVector(0, 0, 0)), {});
             if (smoothness > 0.0f)
             {
                 std::vector<MVector> displacements(count);
@@ -1869,7 +1873,9 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
                 for (int i = 0; i < count; ++i)
                     row.points[i] = row.base[i] + displacements[i];
                 for (const auto &ring : normalRings)
-                    BellColliderSolver::relaxTowardRingBoundary(row.points, ring, 1.0, 0, count, true);
+                    BellColliderSolver::relaxTowardRingBoundary(
+                        row.points, ring, 1.0, 0, count, true,
+                        BellColliderSolver::rowDirections(row.points, row.base), {});
             }
             continue;
         }
@@ -1955,16 +1961,19 @@ MStatus SkirtBellCollider::compute(const MPlug &plug, MDataBlock &dataBlock)
             if (belowKnee)
             {
                 for (size_t i = 0; i < without.size(); ++i)
-                    BellColliderSolver::relaxRowFaded(row.points, without[i], 1.0, true, row.topology, weightsFor(i));
+                    BellColliderSolver::relaxRowFaded(row.points, without[i], 1.0, true, row.topology, weightsFor(i),
+                                                      BellColliderSolver::rowDirections(row.points, row.base));
                 if (tightness < 1.0f)
                     for (size_t i = 2; i < with.size(); ++i)
                         BellColliderSolver::relaxRowFaded(row.points, with[i], 1.0 - tightness, true, row.topology,
-                                                          weightsFor(i));
+                                                          weightsFor(i),
+                                                          BellColliderSolver::rowDirections(row.points, row.base));
             }
             else
                 for (size_t i = 0; i < normalRings.size(); ++i)
                     BellColliderSolver::relaxRowFaded(row.points, normalRings[i], 1.0, true, row.topology,
-                                                      weightsFor(i));
+                                                      weightsFor(i),
+                                                      BellColliderSolver::rowDirections(row.points, row.base));
         }
     }
 

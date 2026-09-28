@@ -140,6 +140,17 @@ MObject BellColliderSolver::makeBellCurve(const MPointArray &points, int bellSub
     return curveData;
 }
 
+void BellColliderSolver::prepareDistalEnd(PreparedBellRing &ring, const MMatrix &matrix, bool distal)
+{
+    const double L = ring.direction.length();
+    const double a = MVector(matrix[0][0], matrix[0][1], matrix[0][2]).length();
+    const double b = MVector(matrix[2][0], matrix[2][1], matrix[2][2]).length();
+    const double w = (std::min)(L, (std::max)(a, b));
+    ring.distalLength = L;
+    ring.distalWidth = w;
+    ring.distalEnd = distal && std::isfinite(L) && std::isfinite(w);
+}
+
 namespace
 {
 template <class Ops>
@@ -166,6 +177,9 @@ BellColliderRelax::Ring<Ops> prepareRelaxRing(const PreparedBellRing &ring, doub
                                                        ring.inverse[2][column]);
     result.collision = Ops::splat(collision);
     result.capAtRingOrigin = capAtRingOrigin;
+    result.distalEnd = ring.distalEnd;
+    result.distalLength = Ops::splat(ring.distalLength);
+    result.distalWidth = Ops::splat(ring.distalWidth);
     return result;
 }
 
@@ -177,6 +191,14 @@ MPoint cartesianPoint(const MPoint &point)
     return result;
 }
 } // namespace
+
+std::vector<MVector> BellColliderSolver::rowDirections(const MPointArray &points, const MPointArray &base)
+{
+    std::vector<MVector> directions(points.length());
+    for (unsigned int i = 0; i < points.length(); ++i)
+        directions[i] = cartesianPoint(points[i]) - cartesianPoint(base[i]);
+    return directions;
+}
 
 void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
                                                  int startIndex, int count, bool capAtRingOrigin)
@@ -217,6 +239,68 @@ void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const Prep
         const BellColliderRelax::Vector<BellColliderRelax::Scalar> raw = {point.x, point.y, point.z};
         const BellColliderRelax::Vector<BellColliderRelax::Scalar> input = {cartesian.x, cartesian.y, cartesian.z};
         const auto output = BellColliderRelax::relax(raw, input, prepared);
+        point.x = output.x;
+        point.y = output.y;
+        point.z = output.z;
+    }
+#endif
+}
+
+void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
+                                                 int startIndex, int count, bool capAtRingOrigin,
+                                                 const std::vector<MVector> &directions,
+                                                 const std::vector<double> &betaScales)
+{
+    if (!(collision > 1e-5))
+        return;
+    // A missing direction means no lift (radial exit); a missing scale means no fade of the centre shift.
+    const auto directionAt = [&](int index) -> MVector {
+        return index >= 0 && static_cast<size_t>(index) < directions.size() ? directions[index] : MVector(0, 0, 0);
+    };
+    const auto scaleAt = [&](int index) -> double {
+        return index >= 0 && static_cast<size_t>(index) < betaScales.size() ? betaScales[index] : 1.0;
+    };
+
+#ifdef YDD_RELAX_SSE2
+    const auto prepared = prepareRelaxRing<BellColliderRelax::Pair>(ring, collision, capAtRingOrigin);
+    for (int j = startIndex; j < startIndex + count; j += 2)
+    {
+        const int second = j + 1 < startIndex + count ? j + 1 : j;
+        MPoint &a = points[j];
+        MPoint &b = points[second];
+        const MPoint ca = cartesianPoint(a);
+        const MPoint cb = cartesianPoint(b);
+        const BellColliderRelax::Vector<BellColliderRelax::Pair> raw = {_mm_set_pd(b.x, a.x), _mm_set_pd(b.y, a.y),
+                                                                        _mm_set_pd(b.z, a.z)};
+        const BellColliderRelax::Vector<BellColliderRelax::Pair> cartesian = {
+            _mm_set_pd(cb.x, ca.x), _mm_set_pd(cb.y, ca.y), _mm_set_pd(cb.z, ca.z)};
+        const MVector da = directionAt(j);
+        const MVector db = directionAt(second);
+        const BellColliderRelax::Vector<BellColliderRelax::Pair> direction = {
+            _mm_set_pd(db.x, da.x), _mm_set_pd(db.y, da.y), _mm_set_pd(db.z, da.z)};
+        const auto scales = _mm_set_pd(scaleAt(second), scaleAt(j));
+        const auto output = BellColliderRelax::relax(raw, cartesian, prepared, direction, scales);
+        a.x = _mm_cvtsd_f64(output.x);
+        a.y = _mm_cvtsd_f64(output.y);
+        a.z = _mm_cvtsd_f64(output.z);
+        if (second != j)
+        {
+            b.x = _mm_cvtsd_f64(_mm_unpackhi_pd(output.x, output.x));
+            b.y = _mm_cvtsd_f64(_mm_unpackhi_pd(output.y, output.y));
+            b.z = _mm_cvtsd_f64(_mm_unpackhi_pd(output.z, output.z));
+        }
+    }
+#else
+    const auto prepared = prepareRelaxRing<BellColliderRelax::Scalar>(ring, collision, capAtRingOrigin);
+    for (int j = startIndex; j < startIndex + count; ++j)
+    {
+        MPoint &point = points[j];
+        const MPoint cartesian = cartesianPoint(point);
+        const BellColliderRelax::Vector<BellColliderRelax::Scalar> raw = {point.x, point.y, point.z};
+        const BellColliderRelax::Vector<BellColliderRelax::Scalar> input = {cartesian.x, cartesian.y, cartesian.z};
+        const MVector d = directionAt(j);
+        const BellColliderRelax::Vector<BellColliderRelax::Scalar> direction = {d.x, d.y, d.z};
+        const auto output = BellColliderRelax::relax(raw, input, prepared, direction, scaleAt(j));
         point.x = output.x;
         point.y = output.y;
         point.z = output.z;
@@ -356,50 +440,44 @@ void BellColliderSolver::deformPoints(const BellColliderInputs& inputs, const st
     }
 }
 
-void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const vector<MPointArray>& bellPointsList, MPointArray& outBellPoints, bool useUnnormalized)
+MVector BellColliderSolver::mergeDisplacement(const MPointArray& basePoints,
+                                              const std::vector<MPointArray>& ringPoints, unsigned int index)
+{
+    // Squared-length weighted mean, rescaled so that parallel pushes keep the largest single length.
+    // The rescale factor max / (sum |d|^3 / sum |d|^2) is bounded, so the merge stays continuous
+    // through cancellation (the mean reaches zero before the factor can matter).
+    double sum = 0;
+    double cubic = 0;
+    double longest = 0;
+    for (const auto& points : ringPoints)
+    {
+        const double length = (points[index] - basePoints[index]).length();
+        sum += pow(length, 2);
+        cubic += length * length * length;
+        if (length > longest)
+            longest = length;
+    }
+    if (!(sum > 0))
+        return MVector(0, 0, 0);
+    MVector merged(0, 0, 0);
+    for (const auto& points : ringPoints)
+    {
+        const MVector displacement = points[index] - basePoints[index];
+        const double squaredLength = pow(displacement.length(), 2);
+        const double weight = squaredLength / sum;
+        merged += displacement * weight;
+    }
+    const double average = cubic / sum;
+    if (average > 0.0)
+        merged = merged * (longest / average);
+    return merged;
+}
+
+void BellColliderSolver::averageDisplacements(int bellSubdivision, const MPointArray& baseBellPoints, const vector<MPointArray>& bellPointsList, MPointArray& outBellPoints)
 {
     outBellPoints = baseBellPoints;
-
-    for (size_t i = bellSubdivision + 1; i < baseBellPoints.length(); i++)
-    {
-        double sum = 0;
-        double maxDist = 0;
-        for (const auto& bellPoints : bellPointsList)
-        {
-            const MVector vec = bellPoints[i] - baseBellPoints[i];
-            const double d = vec.length();
-            sum += pow(d, 2);
-
-            if (d > maxDist)
-                maxDist = d;
-        }
-
-        if (sum > 0)
-        {
-            MVector wp;
-            for (const auto& bellPoints : bellPointsList)
-            {
-                const MVector vec = bellPoints[i] - baseBellPoints[i];
-                const double d = pow(vec.length(), 2);
-                const double w = d / sum;
-
-                wp += vec * w;
-            }
-
-            if (useUnnormalized)
-            {
-                outBellPoints[i] += wp;
-            }
-            else
-            {
-                double wp_len = wp.length();
-                if (wp_len > 1e-5)
-                {
-                    outBellPoints[i] += wp.normal() * maxDist;
-                }
-            }
-        }
-    }
+    for (unsigned int i = bellSubdivision + 1; i < baseBellPoints.length(); i++)
+        outBellPoints[i] += mergeDisplacement(baseBellPoints, bellPointsList, i);
 }
 
 void BellColliderSolver::smoothDisplacements(vector<MVector> &displacements, double smoothness)
@@ -444,7 +522,7 @@ MStatus BellColliderSolver::solve(const BellColliderInputs &inputs, const MPoint
     deformPoints(inputs, inputs.rings, baseBellPoints, bellPlane, bellPointsList);
 
     MPointArray outBellPoints;
-    averageDisplacements(bellSubdivision, baseBellPoints, bellPointsList, outBellPoints, gate);
+    averageDisplacements(bellSubdivision, baseBellPoints, bellPointsList, outBellPoints);
 
     if (gate)
     {
@@ -916,7 +994,7 @@ MStatus BellColliderSolver::deformPoints(const BellRowInputs &inputs, const MPoi
                     }
                 }
                 relaxTowardRingBoundary(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
-                                        inputs.capAtRingOrigin);
+                                        inputs.capAtRingOrigin, rowDirections(points, baseRow), {});
                 if (partial)
                 {
                     // A partially weighted component blends the relaxed result of
@@ -926,7 +1004,8 @@ MStatus BellColliderSolver::deformPoints(const BellRowInputs &inputs, const MPoi
                     // unrelated to the weight.
                     MPointArray still = baseRow;
                     relaxTowardRingBoundary(still, ring, inputs.collision, 0, static_cast<int>(still.length()),
-                                            inputs.capAtRingOrigin);
+                                            inputs.capAtRingOrigin,
+                                            std::vector<MVector>(still.length(), MVector(0, 0, 0)), {});
                     for (unsigned int i = 0; i < points.length(); ++i)
                     {
                         const double componentWeight = componentWeights[topology.vertices[i].componentId];
@@ -944,7 +1023,7 @@ MStatus BellColliderSolver::deformPoints(const BellRowInputs &inputs, const MPoi
             }
         }
         relaxTowardRingBoundary(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
-                                inputs.capAtRingOrigin);
+                                inputs.capAtRingOrigin, std::vector<MVector>(points.length(), MVector(0, 0, 0)), {});
         result.push_back(points);
     }
     ringPoints.swap(result);
@@ -988,6 +1067,52 @@ void BellColliderSolver::relaxRowFaded(MPointArray &points, const PreparedBellRi
     }
 }
 
+void BellColliderSolver::relaxRowFaded(MPointArray &points, const PreparedBellRing &ring, double collision,
+                                       bool capAtRingOrigin, const BellRowTopology &topology,
+                                       const std::vector<double> &componentWeights,
+                                       const std::vector<MVector> &directions)
+{
+    bool partial = false;
+    for (double weight : componentWeights)
+        partial = partial || (weight > 0.0 && weight < 1.0);
+    if (!partial || topology.vertices.size() != points.length())
+    {
+        relaxTowardRingBoundary(points, ring, collision, 0, static_cast<int>(points.length()), capAtRingOrigin,
+                                directions, {});
+        return;
+    }
+    // A component without a weight entry is treated as fully weighted (no partial blend).
+    const auto weightAt = [&](unsigned int index) -> double {
+        const int component = topology.vertices[index].componentId;
+        return component >= 0 && static_cast<size_t>(component) < componentWeights.size() ? componentWeights[component]
+                                                                                            : 1.0;
+    };
+    std::vector<double> betaScales(points.length(), 1.0);
+    for (unsigned int i = 0; i < points.length(); ++i)
+    {
+        const double m = weightAt(i);
+        if (m > 0.0 && m < 1.0)
+            betaScales[i] = 1.0 - 4.0 * m * (1.0 - m);
+    }
+    MPointArray relaxed = points;
+    relaxTowardRingBoundary(relaxed, ring, collision, 0, static_cast<int>(relaxed.length()), capAtRingOrigin,
+                            directions, betaScales);
+    for (unsigned int i = 0; i < points.length(); ++i)
+    {
+        const double m = weightAt(i);
+        if (m <= 0.0 || m >= 1.0)
+        {
+            points[i] = relaxed[i];
+            continue;
+        }
+        const double f = 1.0 - 4.0 * m * (1.0 - m);
+        const MPoint &before = points[i];
+        const MPoint &after = relaxed[i];
+        points[i] = MPoint(before.x * (1.0 - f) + after.x * f, before.y * (1.0 - f) + after.y * f,
+                           before.z * (1.0 - f) + after.z * f, after.w);
+    }
+}
+
 MStatus BellColliderSolver::solveRow(const BellRowInputs &inputs, const MPointArray &baseRow,
                                      const BellRowTopology &topology, BellRowOutputs &outputs)
 {
@@ -1013,32 +1138,7 @@ MStatus BellColliderSolver::solveRow(const BellRowInputs &inputs, const MPointAr
         return status;
     const bool gate = inputs.smoothness > 0.0 || inputs.followGain > 0.0;
     for (unsigned int i = 0; i < baseRow.length(); ++i)
-    {
-        double sum = 0.0;
-        double maximum = 0.0;
-        for (const auto &points : ringPoints)
-        {
-            const double length = (points[i] - baseRow[i]).length();
-            sum += pow(length, 2);
-            if (length > maximum)
-                maximum = length;
-        }
-        if (sum > 0.0)
-        {
-            MVector merged(0, 0, 0);
-            for (const auto &points : ringPoints)
-            {
-                const MVector displacement = points[i] - baseRow[i];
-                const double squaredLength = pow(displacement.length(), 2);
-                const double weight = squaredLength / sum;
-                merged += displacement * weight;
-            }
-            if (gate)
-                result.directDisplacements[i] = merged;
-            else if (merged.length() > 1e-5)
-                result.directDisplacements[i] = merged.normal() * maximum;
-        }
-    }
+        result.directDisplacements[i] = mergeDisplacement(baseRow, ringPoints, i);
     computeLocalFollow(result.directDisplacements, topology, inputs.bellMatrix, inputs.followRange,
                        result.directField.values);
     std::vector<MVector> displacements = result.directDisplacements;
@@ -1053,7 +1153,7 @@ MStatus BellColliderSolver::solveRow(const BellRowInputs &inputs, const MPointAr
     if (gate)
         for (size_t r = 0; r < inputs.rings.size(); ++r)
             relaxRowFaded(result.points, inputs.rings[r], inputs.collision, inputs.capAtRingOrigin, topology,
-                          componentWeights[r]);
+                          componentWeights[r], rowDirections(result.points, baseRow));
     result.componentWeights.swap(componentWeights);
     outputs = result;
     return MS::kSuccess;
