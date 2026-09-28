@@ -46,3 +46,8 @@ add_executable(skirt_leg_model_test skirt_leg_model_test.cpp)
 target_compile_features(skirt_leg_model_test PRIVATE cxx_std_11)
 target_include_directories(skirt_leg_model_test PRIVATE ../sources)
 add_test(NAME skirt_leg_model COMMAND skirt_leg_model_test)
+
+add_executable(skirt_surface_cache_test skirt_surface_cache_test.cpp)
+target_compile_features(skirt_surface_cache_test PRIVATE cxx_std_11)
+target_include_directories(skirt_surface_cache_test PRIVATE ../sources)
+add_test(NAME skirt_surface_cache COMMAND skirt_surface_cache_test)

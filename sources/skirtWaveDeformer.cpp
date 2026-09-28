@@ -396,7 +396,7 @@ MStatus SkirtWaveDeformer::initialize()
     stat = addAttribute(attr_wavePhaseU);
     CHECK_MSTATUS_AND_RETURN_IT(stat);
 
-    // Material/stylization attributes are rigger-tuned (ADR-0004): visible in
+    // Material/stylization attributes are rigger-tuned: visible in
     // the channel box but excluded from the keyable set so Key All and anim
     // layers do not capture them.
     attr_idleComplexity = nAttr.create("idleComplexity", "idleComplexity", MFnNumericData::kDouble, 0.35, &stat);

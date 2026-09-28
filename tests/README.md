@@ -42,11 +42,37 @@ python tests/compare_outputs.py pair --mayapy $mayapy --baseline-plugin C:\basel
 
 Use native Windows Python for `pair` with Windows mayapy so both processes understand the same paths. The `compare` command needs no Maya installation. Its default tolerance is zero; use `--tolerance` to set an absolute coordinate tolerance. The report includes bitwise equality and the largest absolute component difference for each case. A comparison outside tolerance returns exit status 1, including known fixes; inspect those differences instead of treating legacy results as expected behavior.
 
-Capture covers the 12 `REVIEW.md` skirt conditions, five smoothing/follow combinations, wave amplitude and individual signal bypasses, isolated signal contributions, complexity endpoints, DG/Serial/Parallel evaluation, and backward time changes. Additional cases cover a zero-weight highest vertex and the U1 translation setup. Each fixture stores case attributes, double-precision `(x,y,z,w)` coordinates, and a SHA-256 over little-endian doubles. Review-case metadata identifies the known U1 correction. Coordinates support numerical comparisons when a hash differs.
+Capture covers the 12 default skirt conditions, five smoothing/follow combinations, wave amplitude and individual signal bypasses, isolated signal contributions, complexity endpoints, DG/Serial/Parallel evaluation, and backward time changes. Additional cases cover a zero-weight highest vertex and the U1 translation setup. Each fixture stores case attributes, double-precision `(x,y,z,w)` coordinates, and a SHA-256 over little-endian doubles. Review-case metadata identifies the known U1 correction. Coordinates support numerical comparisons when a hash differs.
 
 Benchmark each binary without another Maya job running. The benchmark uses DG evaluation, 20 warmups, five batches, and the median batch mean in milliseconds. Each evaluation changes an input and requests the output data object. Set `--iterations` to an even value of at least 2 (default 40). Timing includes Python calls and DG propagation. It excludes GUI drawing and downstream solver surface rebuilding; the 133-CV wave fixture uses a baked rebuilt surface. Mesh sizes and surface CV counts are checked at runtime. JSON includes the plugin hash, Maya/Python versions, processor description, settings, and every batch result. Compare timings only after inspecting output differences.
 
 `test_compatibility.py` checks the 12 default and five smoothing cases against `fixtures/compatible_outputs.json`. That file records the baseline source commit, binary SHA-256, Maya version, and double encoding. Maya 2026 runs the golden-hash checks; other Maya versions skip that check and still run finite-coordinate, point-count, and periodic-seam assertions. The golden set excludes U1 probes. The benchmark resolves its input/output plugs before warmup and uses `MPlug.setDouble()` and `MPlug.asMObject()` during timing.
+
+The second-pass golden capture is `fixtures/collide_golden_maya2026.json`.
+It stores yddSkirtCollideDeformer outputs for the four long-skirt poses in
+`fixtures/long_skirt_poses/` (frames 0, 1, 2, and 10) with both `closedU`
+values, captured from a fresh scene with one contact generation followed by
+three Gauss-Seidel sweeps and three Gauss points per span. Its metadata
+records the plugin, the source manifest, the inputs, the evaluation mode, and
+the CV packing. Regenerate it only from a plugin built from the sources listed
+in `fixtures/collide_golden_source_manifest.json`:
+
+```powershell
+& $mayapy -B tests/generate_collide_golden.py --plugin (Resolve-Path plugins/2026/yddColliders.mll) --source-manifest tests/fixtures/collide_golden_source_manifest.json --output C:\validation\collide_golden.json
+```
+
+The generator verifies the manifest and its source hashes before loading the
+plugin, refuses to overwrite an existing capture, and checks CV counts and
+finite coordinates before writing. `fixtures/compatible_outputs.json` is the
+separate first-pass skirt-surface compatibility golden. The Python collision
+oracle in `collide_reference.py` uses the same single-contact, three-sweep
+schedule when no schedule is supplied.
+
+The first-pass fixtures are `fixtures/circular_vibration_rig.json` (a 19 by 4
+bell rig with per-frame leg matrices) with `circular_vibration_baseline.json`,
+`knee_bend_straight_baseline.json`, and `row_suspension_rest_baseline.json`.
+They are read by test_thigh_ring_end.py, test_row_relax_direction.py,
+test_knee_bend_fade.py, and test_row_suspension.py.
 
 Build and run the C++ draw-buffer tests from the repository root. Use a devkit that matches your installed Maya version, and add Maya's `bin` directory to `PATH` so Windows can resolve the Maya DLLs:
 
@@ -58,6 +84,97 @@ ctest --test-dir build/draw-tests -C Release --output-on-failure
 ```
 
 With these tests you can check triangle connectivity, wire closure, transformed coordinates, cache invalidation, and the shared Skirt ring frames for unequal left/right leg lengths. The `solver_input` test also checks invalid subdivision, mismatched point arrays, matrix row bounds, and recovery at the C++ solver boundary. It also compares `BellCircleTable` bell points against an inline copy of the historical per-point trigonometry for subdivisions 3 through 4096, three axes, and a skewed matrix, requiring bitwise equality.
+
+Run the nurbs_refit_kernel CTest target to check basis functions, uniform
+knots and Greville abscissae, linear precision through de Boor evaluation,
+convex bounds, repeated knots, and the clamped right endpoint. The executable
+links no Maya libraries. You can also compile tests/nurbs_refit_kernel_test.cpp
+with a C++11 compiler and sources as the include directory; a failed assertion
+returns a nonzero exit status.
+
+With test_surface_fit.py, you can check yddSkirtSurfaceFit on long and short
+skirts at spansV values 1, 4, and 9: topology, knots, convex bounds, endpoints,
+periodicity, invalid inputs and recovery, and degenerate height. The test
+prints the maximum shape difference and checks it against 10 percent of the
+long skirt's mean leg length. You can also check CV hashes across DG, Serial,
+and Parallel time changes and restore spansV and connections from a .ma file.
+
+With test_collide_projection.py, you can check the second pass,
+yddSkirtCollideDeformer, on a radius-2.6 mesh with 32 circumference segments
+and 16 height segments. Supply a separate rest mesh through restGeometry and
+capture restBellMatrix plus the six rest hip, knee, and heel matrices. You can
+also connect NURBS surface data to restGeometry. Keep rest points, current
+points, and every matrix in the geometry's object coordinates.
+
+For each point, use its outward direction in the rest shape to choose the
+contact side, then rotate that direction with each leg. Build each constraint
+from a leg's exterior support plane and its activation weight, and include an
+upward displacement constraint when contact requires it.
+Short skirts use both thighs; Long skirts add both lower legs. Resolve both
+legs together to find the minimum displacement. Use falloff (0 through 1,
+default 0.2) to set an activation band outside each cylinder, measured as a
+fraction of its section radius. Outside that band, you get no correction from
+that cylinder. Through the band, you get a smooth increase in constraint
+weight, reaching full weight at the surface and throughout the interior.
+Remove endFade from second-pass wiring; endpoint handling now uses the
+support normal. Set envelope and vertex weights to 1 to apply the
+full solution; smaller strengths scale the correction. With full activation
+and feasible constraints, you get the exterior support condition for that
+cylinder. Check vertices and surface CVs; their interpolated faces or surface
+patches can still intersect a leg.
+
+The projection tests cover unchanged rest points with positive clearance,
+interior points projected out even at rest, horizontal legs, forward/reverse
+sweeps, bilateral symmetry, exchanged leg inputs, and DG/Serial/Parallel time
+changes. You can check every support inequality and cross-section interior
+with the independent Python geometry oracle. Read the printed infeasible
+vertex count, maximum displacement per degree over 0 through 90 degrees,
+and maximum difference in displacement across mesh edges with the test results.
+For the local sweep from 60 through 66 degrees in 0.1-degree steps, require a
+maximum step displacement of 0.2. Check reverse-sweep hashes in a separate
+subtest; the per-degree and mesh-edge values are reports without thresholds.
+Missing or mismatched rest geometry must preserve the input and produce one
+warning per node; reconnecting valid rest data must restore the correction.
+The suite also covers NURBS rest data and half-strength displacement.
+
+Two expected-failure regressions document limits of partial activation.
+In the horizontal-leg fixture, you can satisfy the weighted constraints
+without reaching every full support plane. With a current point across the
+leg from its rest contact side, you can also end inside the cylinder after a
+partial correction: at radius 1, falloff 0.2, rest point (2, 0.5, 0), and
+current point (-1.1, 0.5, 0), the result is about (-0.05, 0.5, 0).
+The sweep test has no expected-failure marker.
+
+With the collision cases in test_deformers.py, you can check endpoint planes,
+station radii and positions through their effect on support, coincident
+stations, degenerate segments, singular matrices, strength bypasses, and
+object-coordinate invariance. For falloff, check unchanged points outside the
+band, increasing displacement as you widen the band, continuity at both band
+boundaries, and full correction inside the cylinder even at falloff zero.
+The capture tool includes static and horizontal leg poses with rest inputs.
+For the correction benchmark, toggle nodeState between 0 and 1 in active
+and zero-envelope cases.
+
+With tests/test_waist_ring.py, you can check upper-ring contact on
+yddSkirtBellCollider through nodeState and smoothness. Coverage includes
+contact against both legs, unchanged CVs behind the hip plane when smoothness
+is zero, a higher noncontact waist, forward/reverse leg sweeps,
+DG/Serial/Parallel time changes, bilateral symmetry, root tilt, static poses
+at subdivisions 3, 16, and 64, nodeState bypass, and upper-row follow isolation.
+The nodeState test checks every raw ring against analytic circle coordinates,
+retains the knots and periodic CVs, and restores the normal output after a toggle.
+The geometric assertions use nodeState = 1 as the baseline and an independent
+Python reconstruction of the leg cylinders. Only points on the knee side of
+the hip plane need to clear the cylinder radius. These tests check CVs;
+cubic interpolation and the surface between rows can pass inside the cylinders.
+
+Run the native relax_solver_reference CTest target to compare the shared
+relaxation kernel's SSE2 and scalar results with the Maya reference, bit for
+bit, with hip-plane clipping enabled and disabled. The boundary cases include
+negative, zero, and positive plane distances: clipping preserves points at or
+behind the plane, while the default unclipped path pushes interior points at
+all three distances. The comparison also covers odd counts, inactive SIMD
+lanes, sequential rings, homogeneous coordinates, and nonfinite inputs.
 
 Run the viewport smoke test in a new, dedicated Maya GUI process. You will replace its scene and change its display preferences. Paste this example into the Python tab of the Script Editor; use absolute paths for the checkout, plugin, and output directory:
 
@@ -78,6 +195,12 @@ maya.utils.executeDeferred(
 
 Inspect `result.json` and the PNG files in the output directory. Require `passed: true`, an empty `errors` list, and all pixel checks to pass. Check the images for Bell and Skirt drawing, including the asymmetric legs. The test compares raw pixel hashes after same-frame edits and restoration, visibility changes, camera changes, and a time round trip. It also checks for colored drawing before hiding the colliders and its absence afterward. You must assess Cached Playback and playback FPS in separate tests. Close the dedicated Maya process after reviewing the results; `main()` leaves it open.
 
+`visual/wave_expression_gallery.py` samples the wave deformer with mayapy and
+writes a self-contained review gallery (`index.html`, `samples.json`, and a
+contact sheet) to `--output-dir`. `visual/rasterize_contact_sheet.py` turns the
+SVG contact sheet into a PNG with Pillow. The outputs are generated files and
+are not committed; `tests/visual/output/` is ignored.
+
 
 `test_deformers.py` covers the wave deformer's hidden `evaluationToWorldRotation`
 (`etwr`) matrix. The tests check the identity default and attribute flags, that
@@ -91,68 +214,6 @@ recover on the next valid value, and that the value and its connection survive
 `.ma` and `.mb` round trips.
 
 `test_registration.py` checks the plugin vendor/version and an independent
-list of five node names, IDs, API kinds, and locator draw classifications.
+list of six node names, IDs, API kinds, and locator draw classifications.
 It also checks the public Python module and prefixed custom node names.
 The identity contract is [ADR-0003](../docs/adr/0003-ydd-plugin-identity.md).
-
-For a real mGear component build, supply the mGear release directory and
-the component repository root:
-
-```powershell
-& $mayapy -B tests/integration/check_wave_component.py --plugin C:\build\yddColliders.mll --mgear-release C:\mgear\release --components-root C:\mgear_shifter_components
-```
-
-The integration check builds three wave/post-collision configurations and
-checks the host attributes, connections, deformer order, initial zero wave,
-and active surface deformation. It then rebuilds with the grid rows offset
-above the waist reference, entirely above the hips, and past the heels, and
-requires every driver to sit on its guide position. Its JSON includes source and plugin hashes.
-The component and guide must both report version 4.1.0. The check also verifies the column-major grid naming, the guide locator chain, the joint chain, that a flat pre-4.0.0 guide is rejected, that the ten leg profile parameters reach both collider nodes, and that fitting the profile from a synthetic body mesh recovers known station ratios.
-
-The local component requires plugin major 4. Wave and post collision operate in
-geometry object coordinates. Their references must use that same space; the
-surface transform inherits the component root. World signal directions use
-`evaluationToWorldRotation`. There is no World/Object evaluation switch.
-
-`check_local_evaluation.py`, called by the integration runner, verifies the
-surface's inherited transform, local geometry and matrix connections, skin
-influence and final-surface weight queries through both Maya APIs, and zero
-collider/rebuild computes on root edits. Maya's standard skin geometry connection
-is retained; skin may compute once on a root edit. Six guide configurations cover translation, rotation,
-scale, short skirts, and different rebuild/ring settings. Keyed forward and
-backward time changes exercise a nonempty Serial/Parallel evaluation graph and
-reject fallback. Maya 2026 also compares positions and basis directions against
-the recorded world-space rig in `reference/skirt_world_2026.json.gz` and checks
-74 contact poses at strengths 0, 1, and 2 against
-`reference/skirt_secondary_world_2026.json.gz`. Five authored guide variants
-also compare against `reference/skirt_guides_world_2026.json.gz`, including
-ring edits after moving and rotating the guide. All three references include
-source hashes and tolerances. Contact toggles must return to their original output.
-
-To time the complete component, including final surface, controls, and joints:
-
-```powershell
-& $mayapy -B tests/integration/benchmark_skirt_component.py --plugin C:\build\yddColliders.mll --mgear-release C:\mgear\release --components-root C:\mgear_shifter_components --output rig-timing.json --mode off --mode serial --mode parallel --warmup 20 --batches 5 --iterations 60 --profile
-```
-
-Run baseline and candidate in separate processes with no concurrent Maya jobs.
-Numerical capture uses the surface DAG path in world space and runs outside the
-timed interval. `--profile` adds a separate DG-only `dgtimer` pass; it does not
-time Serial/Parallel execution. The JSON retains every batch and per-node
-compute/dirty/fetch/callback counters. Inclusive node times overlap and must not
-be added together. Inputs change through `MPlug`, followed by explicit output
-pulls; selecting Serial/Parallel here does not establish EM playback throughput.
-Use the keyed integration check for EM correctness. These measurements exclude
-GUI drawing and Cached Playback.
-
-
-Add `--upstream-plugin C:\upstream\colliders.mll` to test consumer autoload
-and coexistence. The CLI adds the candidate directory to the plugin search
-path before initializing Maya, unloads the initial candidate in an empty
-scene without forcing, and loads upstream alone. It invokes the real
-component plugin guard and checks both loaded paths and registered node
-sets. It then builds all three rig configurations with both plugins loaded.
-The JSON records the autoload check, both binary hashes, and coexistence
-checks after each rig build.
-
-SIMD 緩和処理の実測と再現手順は [simd-relaxation.md](../docs/validation/simd-relaxation.md) を参照してください。
