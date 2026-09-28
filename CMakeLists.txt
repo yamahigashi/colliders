@@ -32,6 +32,12 @@ set(sources
 
 add_library(yddColliders SHARED ${sources})
 
+if(MSVC)
+  # Keep the checkout path out of the __FILE__ strings embedded in the binary.
+  file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/" YDD_TRIM_PREFIX)
+  target_compile_options(yddColliders PRIVATE "/d1trimfile:${YDD_TRIM_PREFIX}")
+endif()
+
 MAYA_PLUGIN( yddColliders )
 install(TARGETS yddColliders
         RUNTIME DESTINATION modules
