@@ -206,7 +206,8 @@ public:
   static MObject makeBellCurve(const MPointArray &points, int bellSubdivision);
   static void roundMeshPoints(MPointArray &points);
   static bool collisionPoints(const MMatrix &bellMatrix, const MMatrix &bellInverse, const Plane &bellPlane,
-                              const PreparedBellRing &ring, MPoint &bellPoint, MPoint &ringPoint, MPoint &linePoint);
+                              const PreparedBellRing &ring, MPoint &bellPoint, MPoint &ringPoint, MPoint &linePoint,
+                              bool *extended = nullptr);
   static void relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,
                                       int startIndex, int count, bool capAtRingOrigin = false);
   static void relaxTowardRingBoundary(MPointArray &points, const PreparedBellRing &ring, double collision,

@@ -310,8 +310,11 @@ void BellColliderSolver::relaxTowardRingBoundary(MPointArray &points, const Prep
 
 bool BellColliderSolver::collisionPoints(const MMatrix &bellMatrix, const MMatrix &bellMatrixInverse,
                                          const Plane &bellPlane, const PreparedBellRing &ring,
-                                         MPoint &collisionPointBell, MPoint &collisionPointRing, MPoint &linePoint)
+                                         MPoint &collisionPointBell, MPoint &collisionPointRing, MPoint &linePoint,
+                                         bool *extended)
 {
+    if (extended)
+        *extended = false;
     const MMatrix &ringMatrixInverse = ring.inverse;
     const MVector &ringDirection = ring.direction;
     const MPoint &ring_translate = ring.translation;
@@ -356,6 +359,12 @@ bool BellColliderSolver::collisionPoints(const MMatrix &bellMatrix, const MMatri
                 collisionPointRing = sphereLinePoints[k];
                 found = true;
             }
+        }
+        if (!found && extended && ring_proj_len > 1e-5)
+        {
+            collisionPointRing = linePoint;
+            found = true;
+            *extended = true;
         }
     }
 
@@ -794,18 +803,87 @@ std::vector<double> componentContactWeights(const BellRowTopology &topology, con
     return weights;
 }
 
+double liftSmoothstep(double x)
+{
+    const double t = (std::min)(1.0, (std::max)(0.0, x));
+    return (t * t) * (3.0 - 2.0 * t);
+}
+
+struct LiftContact
+{
+    bool found = false;
+    bool extended = false;
+    MPoint bellHit, ringHit, linePoint;
+    double collisionDelta = 0.0;
+    double R = 0.0, rOffset = 0.0, r = 0.0, H = 0.0;
+    double byHeight = 0.0, byMargin = 0.0, a = 0.0;
+};
+
+LiftContact liftContact(const MMatrix &bellMatrix, const MMatrix &bellInverse, const Plane &bellPlane,
+                        const MPointArray &baseRow, const PreparedBellRing &ring)
+{
+    LiftContact contact;
+    const MVector axis = maxis(bellMatrix, 1);
+    if (baseRow.length() == 0 || axis.length() <= 1e-5)
+        return contact;
+    contact.found = BellColliderSolver::collisionPoints(bellMatrix, bellInverse, bellPlane, ring, contact.bellHit,
+                                                        contact.ringHit, contact.linePoint, &contact.extended);
+    if (!contact.found)
+        return contact;
+    contact.collisionDelta =
+        (bellPlane.distance(contact.ringHit) - bellPlane.distance(contact.bellHit)) / axis.length();
+    if (!(contact.collisionDelta < 0.0))
+        return contact;
+    contact.R = (contact.bellHit - ring.translation).length();
+    contact.rOffset = (contact.linePoint - ring.translation).length();
+    const MMatrix matrix = ring.inverse.inverse();
+    const MVector A = maxis(matrix, 0), B = maxis(matrix, 2);
+    contact.r = (std::max)(A.length(), B.length());
+    const double L = ring.direction.length();
+    const MVector up = -bellPlane.normal;
+    contact.H = std::hypot(A * up, B * up);
+    for (unsigned int i = 0; i < baseRow.length(); ++i)
+    {
+        MPoint point = baseRow[i];
+        if (point.w != 1.0)
+            point.cartesianize();
+        const MVector local = MVector(point - ring.translation) * ring.inverse;
+        const double axial = local.y * L;
+        const double fade = contact.r > 1e-12
+                                ? liftSmoothstep((axial + 0.25 * contact.r) / (0.25 * contact.r))
+                                : (axial >= 0.0 ? 1.0 : 0.0);
+        const double pen = 1.0 - std::hypot(local.x, local.z);
+        const MPoint centre = ring.translation + ring.direction * local.y;
+        const double h = contact.H - (point - centre) * up;
+        const double g = liftSmoothstep((pen + 0.10) / 0.10);
+        const double b = contact.r > 1e-12
+                             ? g * liftSmoothstep((h - 0.25 * contact.r) / (0.5 * contact.r))
+                             : 0.0;
+        if (fade <= 0.0 || g <= 0.0 || contact.r <= 1e-12)
+            continue;
+        const double contribution = b * fade;
+        if (contribution > contact.byHeight)
+            contact.byHeight = contribution;
+    }
+    contact.byMargin = !contact.extended && contact.r > 1e-12
+                           ? liftSmoothstep((contact.R - contact.rOffset) / (0.5 * contact.r))
+                           : 0.0;
+    double amplitude = (std::max)(contact.byHeight, contact.byMargin);
+    const MVector projected = bellPlane.projectVector(ring.direction);
+    if (L > 1e-12)
+        amplitude *= liftSmoothstep(projected.length() / (0.05 * L));
+    contact.a = amplitude;
+    return contact;
+}
+
 std::vector<unsigned int> rowContactSeeds(const BellRowInputs &inputs, const MPointArray &baseRow,
                                           const BellRowTopology &topology, const PreparedBellRing &ring)
 {
     const MMatrix inverse = inputs.bellMatrix.inverse();
     const MVector axis = maxis(inputs.bellMatrix, 1);
     const Plane plane(taxis(inputs.bellMatrix), axis.normal());
-    MPoint bellHit, ringHit, lineHit;
-    if (baseRow.length() == 0 || axis.length() <= 1e-5 ||
-        !BellColliderSolver::collisionPoints(inputs.bellMatrix, inverse, plane, ring, bellHit, ringHit, lineHit))
-        return {};
-    const double collisionDelta = (plane.distance(ringHit) - plane.distance(bellHit)) / axis.length();
-    if (!(collisionDelta < 0.0))
+    const LiftContact contact = liftContact(inputs.bellMatrix, inverse, plane, baseRow, ring);
+    if (!contact.found || !std::isfinite(contact.a) || !(contact.a > 0.0))
         return {};
     const MPoint ringProjection = plane.projectPoint(ring.translation) * inverse;
     const MVector direction = (plane.projectVector(ring.direction) * inverse).normal();
@@ -938,89 +1016,87 @@ MStatus BellColliderSolver::deformPoints(const BellRowInputs &inputs, const MPoi
     {
         const auto &ring = inputs.rings[r];
         MPointArray points = baseRow;
-        MPoint collisionPointBell, collisionPointRing, linePoint;
-        if (bellAxis.length() > 1e-5 && !ringSeeds[r].empty() &&
-            collisionPoints(bellMatrix, bellMatrixInverse, bellPlane, ring, collisionPointBell, collisionPointRing,
-                            linePoint))
+        LiftContact contact;
+        if (bellAxis.length() > 1e-5 && !ringSeeds[r].empty())
+            contact = liftContact(bellMatrix, bellMatrixInverse, bellPlane, baseRow, ring);
+        if (contact.found && std::isfinite(contact.a) && contact.a > 0.0)
         {
-            const double collisionDelta =
-                (bellPlane.distance(collisionPointRing) - bellPlane.distance(collisionPointBell)) / bellAxis.length();
-            if (collisionDelta < 0.0)
+            const MPoint &ring_translate = ring.translation;
+            const MPoint ring_translate_proj = bellPlane.projectPoint(ring_translate);
+            const MVector ringDirection_proj = bellPlane.projectVector(ring.direction);
+            MTransformationMatrix rotationMatrixFn;
+            rotationMatrixFn.setTranslation(ring_translate, MSpace::kWorld);
+            const MMatrix rotateMatrixInverse = rotationMatrixFn.asMatrixInverse();
+            const MQuaternion fullQuat(contact.bellHit - ring_translate, contact.ringHit - ring_translate);
+            const MQuaternion quat = contact.a >= 1.0
+                                         ? fullQuat
+                                         : slerp(MQuaternion::identity, fullQuat, contact.a);
+            rotationMatrixFn.rotateBy(quat, MSpace::kTransform);
+            const MMatrix rotateMatrix = rotationMatrixFn.asMatrix();
+            const Plane upperBellPlane(bell_translate + bellAxis, bellNormal);
+            const MPoint ring_translate_proj_bell = ring_translate_proj * bellMatrixInverse;
+            const MVector ringDirection_proj_bell = (ringDirection_proj * bellMatrixInverse).normal();
+            const MPointArray bellHits = findSphereLineIntersection(
+                ring_translate_proj * bellMatrixInverse, ringDirection_proj * bellMatrixInverse, MPoint(0, 0, 0),
+                1.001);
+            // collisionPoints succeeded with the same arguments, so a hit exists;
+            // an empty array would only mean the two call sites drifted apart.
+            const MVector contactRay = bellHits.length() ? MVector(bellHits[0]) : MVector(0, 0, 0);
+            std::vector<MVector> offsets(points.length());
+            for (unsigned int i = 0; i < points.length(); ++i)
+                offsets[i] = MVector(bellPlane.projectPoint(points[i]) * bellMatrixInverse);
+            const std::vector<double> &componentWeights = weights[r] = componentContactWeights(
+                topology, offsets, contactRay, ringSeeds[r][0], inputs.contactBlendWidth);
+            bool partial = false;
+            for (double componentWeight : componentWeights)
+                partial = partial || (componentWeight > 0.0 && componentWeight < 1.0);
+            for (unsigned int i = 0; i < points.length(); ++i)
             {
-                const MPoint &ring_translate = ring.translation;
-                const MPoint ring_translate_proj = bellPlane.projectPoint(ring_translate);
-                const MVector ringDirection_proj = bellPlane.projectVector(ring.direction);
-                MTransformationMatrix rotationMatrixFn;
-                rotationMatrixFn.setTranslation(ring_translate, MSpace::kWorld);
-                const MMatrix rotateMatrixInverse = rotationMatrixFn.asMatrixInverse();
-                const MQuaternion quat(collisionPointBell - ring_translate, collisionPointRing - ring_translate);
-                rotationMatrixFn.rotateBy(quat, MSpace::kTransform);
-                const MMatrix rotateMatrix = rotationMatrixFn.asMatrix();
-                const Plane upperBellPlane(bell_translate + bellAxis, bellNormal);
-                const MPoint ring_translate_proj_bell = ring_translate_proj * bellMatrixInverse;
-                const MVector ringDirection_proj_bell = (ringDirection_proj * bellMatrixInverse).normal();
-                const MPointArray bellHits = findSphereLineIntersection(
-                    ring_translate_proj * bellMatrixInverse, ringDirection_proj * bellMatrixInverse, MPoint(0, 0, 0),
-                    1.001);
-                // collisionPoints succeeded with the same arguments, so a hit exists;
-                // an empty array would only mean the two call sites drifted apart.
-                const MVector contactRay = bellHits.length() ? MVector(bellHits[0]) : MVector(0, 0, 0);
-                std::vector<MVector> offsets(points.length());
-                for (unsigned int i = 0; i < points.length(); ++i)
-                    offsets[i] = MVector(bellPlane.projectPoint(points[i]) * bellMatrixInverse);
-                const std::vector<double> &componentWeights = weights[r] = componentContactWeights(
-                    topology, offsets, contactRay, ringSeeds[r][0], inputs.contactBlendWidth);
-                bool partial = false;
-                for (double componentWeight : componentWeights)
-                    partial = partial || (componentWeight > 0.0 && componentWeight < 1.0);
-                for (unsigned int i = 0; i < points.length(); ++i)
+                if (componentWeights[topology.vertices[i].componentId] <= 0.0)
+                    continue;
+                const MPoint bellPoint_proj = bellPlane.projectPoint(points[i]);
+                const MVector offset_proj = bellPoint_proj * bellMatrixInverse - ring_translate_proj_bell;
+                double weight = offset_proj.normal() * ringDirection_proj_bell;
+                if (weight > inputs.falloff)
                 {
-                    if (componentWeights[topology.vertices[i].componentId] <= 0.0)
-                        continue;
-                    const MPoint bellPoint_proj = bellPlane.projectPoint(points[i]);
-                    const MVector offset_proj = bellPoint_proj * bellMatrixInverse - ring_translate_proj_bell;
-                    double weight = offset_proj.normal() * ringDirection_proj_bell;
-                    if (weight > inputs.falloff)
-                    {
-                        const double divisor = 1.0 - inputs.falloff;
-                        weight = divisor > 1e-5 ? (weight - inputs.falloff) / divisor : 1.0;
-                        if (inputs.smoothness > 0.0)
-                            weight = weight * weight * (3.0 - 2.0 * weight);
-                        const MPoint rp = points[i] * rotateMatrixInverse * rotateMatrix;
-                        MPoint p = rp;
-                        if (upperBellPlane.distance(rp) > 0)
-                            p = upperBellPlane.projectPoint(rp);
-                        points[i] = p * weight + points[i] * (1.0 - weight);
-                    }
+                    const double divisor = 1.0 - inputs.falloff;
+                    weight = divisor > 1e-5 ? (weight - inputs.falloff) / divisor : 1.0;
+                    if (inputs.smoothness > 0.0)
+                        weight = weight * weight * (3.0 - 2.0 * weight);
+                    const MPoint rp = points[i] * rotateMatrixInverse * rotateMatrix;
+                    MPoint p = rp;
+                    if (upperBellPlane.distance(rp) > 0)
+                        p = upperBellPlane.projectPoint(rp);
+                    points[i] = p * weight + points[i] * (1.0 - weight);
                 }
-                relaxTowardRingBoundary(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
-                                        inputs.capAtRingOrigin, rowDirections(points, baseRow), {});
-                if (partial)
-                {
-                    // A partially weighted component blends the relaxed result of
-                    // the full rotation with the relaxed result of no rotation.
-                    // Blending before the relax would leave partially lifted points
-                    // inside the ring, where the relax pushes them out along a path
-                    // unrelated to the weight.
-                    MPointArray still = baseRow;
-                    relaxTowardRingBoundary(still, ring, inputs.collision, 0, static_cast<int>(still.length()),
-                                            inputs.capAtRingOrigin,
-                                            std::vector<MVector>(still.length(), MVector(0, 0, 0)), {});
-                    for (unsigned int i = 0; i < points.length(); ++i)
-                    {
-                        const double componentWeight = componentWeights[topology.vertices[i].componentId];
-                        if (componentWeight <= 0.0 || componentWeight >= 1.0)
-                            continue;
-                        const MPoint &lifted = points[i];
-                        const MPoint &rest = still[i];
-                        points[i] = MPoint(rest.x * (1.0 - componentWeight) + lifted.x * componentWeight,
-                                           rest.y * (1.0 - componentWeight) + lifted.y * componentWeight,
-                                           rest.z * (1.0 - componentWeight) + lifted.z * componentWeight, lifted.w);
-                    }
-                }
-                result.push_back(points);
-                continue;
             }
+            relaxTowardRingBoundary(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
+                                    inputs.capAtRingOrigin, rowDirections(points, baseRow), {});
+            if (partial)
+            {
+                // A partially weighted component blends the relaxed result of
+                // the full rotation with the relaxed result of no rotation.
+                // Blending before the relax would leave partially lifted points
+                // inside the ring, where the relax pushes them out along a path
+                // unrelated to the weight.
+                MPointArray still = baseRow;
+                relaxTowardRingBoundary(still, ring, inputs.collision, 0, static_cast<int>(still.length()),
+                                        inputs.capAtRingOrigin,
+                                        std::vector<MVector>(still.length(), MVector(0, 0, 0)), {});
+                for (unsigned int i = 0; i < points.length(); ++i)
+                {
+                    const double componentWeight = componentWeights[topology.vertices[i].componentId];
+                    if (componentWeight <= 0.0 || componentWeight >= 1.0)
+                        continue;
+                    const MPoint &lifted = points[i];
+                    const MPoint &rest = still[i];
+                    points[i] = MPoint(rest.x * (1.0 - componentWeight) + lifted.x * componentWeight,
+                                       rest.y * (1.0 - componentWeight) + lifted.y * componentWeight,
+                                       rest.z * (1.0 - componentWeight) + lifted.z * componentWeight, lifted.w);
+                }
+            }
+            result.push_back(points);
+            continue;
         }
         relaxTowardRingBoundary(points, ring, inputs.collision, 0, static_cast<int>(points.length()),
                                 inputs.capAtRingOrigin, std::vector<MVector>(points.length(), MVector(0, 0, 0)), {});
